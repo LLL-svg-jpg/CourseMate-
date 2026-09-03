@@ -1,0 +1,58 @@
+# CourseMate 配置模板
+# 复制本文件为 config.toml 后修改。config.toml 已被 .gitignore 忽略，不会泄露账号。
+
+[account]
+# 留空则运行时在浏览器里手动登录，程序会自动保存 Cookie，下次免密
+username = ""
+password = ""
+
+[browser]
+# chrome / edge / chromium
+channel = "chrome"
+# 浏览器可执行文件路径，留空则自动查找。地址栏输入 chrome://version 可查看
+executable_path = ""
+# 窗口尺寸。注意：最小化窗口可能导致播放进度不累加，建议保持可见
+window_size = [1440, 900]
+# 无头模式。强烈建议 false —— 陪伴软件的意义就是你能看见它在干活
+headless = false
+
+[course]
+# 课程播放页 URL，一行一个，会按顺序依次学习
+urls = [
+    # "https://mooc1.chaoxing.com/mycourse/studentstudy?...",
+]
+# 播放倍速。超过 2.0 极易触发风控，程序会强制夹在 [0.5, 2.0]
+speed = 1.5
+# 是否静音
+mute = true
+# 单门课程最长学习分钟数，0 表示不限制。人机验证与答题耗时不计入
+limit_max_minutes = 0
+
+[answer]
+# 是否启用自动答题。关闭则遇到弹题仅暂停并提醒你
+enabled = true
+# 答错后是否继续换答案重试，直到平台判定正确。默认开启。
+# 原因：答错的题平台会重新弹出，只答一次会让同一道题无限重弹，视频卡住不动。
+# 开启后必然会提交答案 —— 不提交就拿不到对错反馈。
+retry_until_correct = true
+# 仅在 retry_until_correct = false 时生效：那唯一一次作答是否提交
+auto_submit = false
+# AI 服务商：anthropic / openai_compatible
+provider = "anthropic"
+# API Key。也可改用环境变量 ANTHROPIC_API_KEY / OPENAI_API_KEY
+api_key = ""
+# 模型。默认 claude-opus-5（最强，答题准确率优先）
+# 想省钱可换 claude-sonnet-5；配合下方 cache = true，重复题目不会重复计费
+model = "claude-opus-5"
+# openai_compatible 时填写，例如 DeepSeek: https://api.deepseek.com/v1
+base_url = ""
+# 单题超时秒数
+timeout = 45
+# 是否启用本地题库缓存。同门课题目高度重复，开启后 AI 调用量大幅下降
+cache = true
+
+[runtime]
+# 日志级别 DEBUG / INFO / WARN / ERROR
+log_level = "INFO"
+# 遇到人机验证时，是否发出提示音提醒你回来处理
+beep_on_captcha = true
