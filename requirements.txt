@@ -1,0 +1,5 @@
+playwright>=1.44
+# Anthropic 官方 SDK。AI 答题走 SDK 而非裸 HTTP，才能用上结构化输出
+anthropic>=0.40
+# 仅用于 OpenAI 兼容端点（DeepSeek 等），不参与 Anthropic 调用
+httpx>=0.27

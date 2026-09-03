@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 个人配置：里面有账号、密码、API Key，绝对不能提交
+config.toml
+
+# 运行时数据：登录 Cookie、题库、日志、窗口位置，全是本机的东西
+runtime/
+
+# 日志
+*.log
+
+# 打包产物
+dist/
+build/
+*.spec
+version_info.txt
+
+# 快捷方式指向本机绝对路径，对别人无效，还会暴露自己的目录结构
+*.lnk
+
+# 备份
+*.bak
