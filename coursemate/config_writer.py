@@ -34,8 +34,11 @@ keep_open_on_failure = {keep_open}
 headless = {headless}
 
 [course]
-# 播放倍速，程序会强制夹在 [0.5, 2.0]
+# 播放倍速。默认夹在 [0.5, 2.0]；开了下面的 allow_high_speed 才放宽到 4.0
 speed = {speed}
+# 解锁 2 倍以上的倍速。多数平台会把高倍速判成异常播放：
+# 轻则进度不计（白刷），重则触发人机验证。开之前想清楚
+allow_high_speed = {allow_high_speed}
 # 是否静音
 mute = {mute}
 # 单门课程最长学习分钟数，0 表示不限制。人机验证与答题耗时不计入
@@ -67,6 +70,8 @@ cache = {cache}
 [runtime]
 log_level = "{log_level}"
 beep_on_captcha = {beep_on_captcha}
+# 出现人机验证时把主窗口叫到最前。收在托盘里时光响铃容易错过
+captcha_popup = {captcha_popup}
 # 打开软件后自动开始刷课
 autorun = {autorun}
 # 界面字号（10~24）
@@ -117,6 +122,7 @@ def dump_config(data: dict[str, Any]) -> str:
         course_list=course_list,
         speed=float(data.get("speed", 1.5)),
         mute=_bool(data.get("mute", True)),
+        allow_high_speed=_bool(data.get("allow_high_speed", False)),
         limit_max_minutes=float(data.get("limit_max_minutes", 0)),
         answer_enabled=_bool(data.get("answer_enabled", True)),
         retry_until_correct=_bool(data.get("retry_until_correct", True)),
@@ -135,6 +141,7 @@ def dump_config(data: dict[str, Any]) -> str:
         always_on_top=_bool(data.get("always_on_top", False)),
         start_minimized=_bool(data.get("start_minimized", False)),
         beep_on_captcha=_bool(data.get("beep_on_captcha", True)),
+        captcha_popup=_bool(data.get("captcha_popup", True)),
     )
 
 

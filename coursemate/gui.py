@@ -21,7 +21,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
-from .config import Config, ConfigError
+from .config import SPEED_MAX, SPEED_MAX_UNLOCKED, SPEED_MIN, Config, ConfigError
 from .config_writer import save_config
 from .logger import Logger
 from .paths import app_dir, resource
@@ -590,24 +590,31 @@ class CourseMateGUI:
 
         ttk.Label(tab, text="播放倍速").grid(row=3, column=0, sticky="w")
         self.speed_var = tk.DoubleVar(value=1.5)
-        speed_scale = ttk.Scale(tab, from_=0.5, to=2.0, variable=self.speed_var,
-                                orient="horizontal", command=self._on_speed_change)
-        speed_scale.grid(row=3, column=1, sticky="ew", padx=(8, 8))
+        self.speed_scale = ttk.Scale(tab, from_=SPEED_MIN, to=SPEED_MAX,
+                                     variable=self.speed_var,
+                                     orient="horizontal", command=self._on_speed_change)
+        self.speed_scale.grid(row=3, column=1, sticky="ew", padx=(8, 8))
         self.speed_label = ttk.Label(tab, text="1.5x", width=6, font=FONT_BOLD)
         self.speed_label.grid(row=3, column=2, sticky="w")
         self.mute_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(tab, text="静音播放", variable=self.mute_var).grid(
             row=3, column=3, sticky="w", padx=(12, 0))
 
-        ttk.Label(tab, text="倍速超过 2.0 极易触发风控，已锁定上限",
-                  style="Hint.TLabel").grid(row=4, column=0, columnspan=4, sticky="w", pady=(0, 8))
+        self.high_speed_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(tab, text=f"解锁 2 倍以上（最高 {SPEED_MAX_UNLOCKED:.0f}x）",
+                        variable=self.high_speed_var,
+                        command=self._apply_speed_ceiling).grid(
+            row=4, column=0, columnspan=2, sticky="w")
+        ttk.Label(tab, text="多数平台会把高倍速判成异常播放：轻则进度不计（白刷），重则触发人机验证",
+                  style="Warn.TLabel").grid(row=5, column=0, columnspan=4,
+                                            sticky="w", pady=(0, 8))
 
-        ttk.Label(tab, text="限时（分钟）").grid(row=5, column=0, sticky="w")
+        ttk.Label(tab, text="限时（分钟）").grid(row=6, column=0, sticky="w")
         self.limit_var = tk.StringVar(value="0")
         ttk.Entry(tab, textvariable=self.limit_var, width=10).grid(
-            row=5, column=1, sticky="w", padx=(8, 0))
+            row=6, column=1, sticky="w", padx=(8, 0))
         ttk.Label(tab, text="0 = 不限时。答题与验证等待不计入",
-                  style="Hint.TLabel").grid(row=5, column=2, columnspan=2, sticky="w")
+                  style="Hint.TLabel").grid(row=6, column=2, columnspan=2, sticky="w")
 
         sep = ttk.Separator(tab, orient="horizontal")
         sep.grid(row=6, column=0, columnspan=4, sticky="ew", pady=10)
@@ -857,20 +864,23 @@ class CourseMateGUI:
         ttk.Checkbutton(box, text="打开软件后自动开始刷课",
                         variable=self.autorun_var).grid(
             row=2, column=0, columnspan=3, sticky="w", pady=(8, 0))
-        ttk.Label(box, text="配合开机自启，开机就自动开刷。首次使用建议先关着",
+        ttk.Label(box, text="配合开机自启即可开机就开刷。首次使用建议先关着",
                   style="Hint.TLabel").grid(row=3, column=0, columnspan=3, sticky="w")
 
         self.start_min_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(box, text="开机自启时直接最小化", variable=self.start_min_var).grid(
             row=4, column=0, columnspan=3, sticky="w", pady=(8, 0))
-        ttk.Label(box, text="开机后安静地跑，不弹到你面前",
-                  style="Hint.TLabel").grid(row=5, column=0, columnspan=3, sticky="w")
 
         self.beep_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(box, text="出现人机验证时响铃提醒", variable=self.beep_var).grid(
             row=6, column=0, columnspan=3, sticky="w", pady=(8, 0))
-        ttk.Label(box, text="程序不破解验证码，一律暂停并交还你手动处理",
-                  style="Hint.TLabel").grid(row=7, column=0, columnspan=3, sticky="w")
+        self.captcha_popup_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(box, text="并把窗口叫到最前", variable=self.captcha_popup_var).grid(
+            row=7, column=0, columnspan=3, sticky="w")
+        ttk.Label(box, text="程序不破解验证码，一律暂停交还你处理；"
+                            "窗口收在托盘里时，光响铃容易错过",
+                  style="Hint.TLabel").grid(row=71, column=0, columnspan=3, sticky="w")
+
 
         ttk.Label(box, text="全部刷完后").grid(row=8, column=0, sticky="w", pady=(10, 0))
         self.on_finish_var = tk.StringVar(value="什么都不做")
@@ -1025,7 +1035,23 @@ class CourseMateGUI:
     # ---------------- 交互回调 ----------------
 
     def _on_speed_change(self, _value) -> None:
-        self.speed_label.configure(text=f"{self.speed_var.get():.2f}x")
+        speed = self.speed_var.get()
+        self.speed_label.configure(text=f"{speed:.2f}x")
+        # 超过 2 倍就把数字标红，提醒这一档已经不保险了
+        self.speed_label.configure(
+            foreground="#c62828" if speed > SPEED_MAX + 0.001 else "")
+
+    def _apply_speed_ceiling(self) -> None:
+        """解锁开关变动时，调整倍速滑块的上限。
+
+        关掉时要把已经调上去的倍速压回 2.0——否则开关关了、
+        倍速却还留在 3.5，滑块显示和实际行为对不上。
+        """
+        ceiling = SPEED_MAX_UNLOCKED if self.high_speed_var.get() else SPEED_MAX
+        self.speed_scale.configure(to=ceiling)
+        if self.speed_var.get() > ceiling:
+            self.speed_var.set(ceiling)
+        self._on_speed_change(None)
 
     def _update_browser_hint(self) -> None:
         """把实际会用哪个浏览器显示出来，省得用户猜。"""
@@ -1436,7 +1462,7 @@ class CourseMateGUI:
         字号 24 时最高的「运行」要 467px，700 高的窗口装不下。
         """
         size = int(round(self.font_size_var.get()))
-        want = max(700, 640 + size * 9)
+        want = max(700, 660 + size * 9)
         # 但别把最小高度顶到超出屏幕：小屏笔记本上那样会连窗口都摆不下。
         # 到那一步只能请用户自己把字号调小，总比窗口拖不动强
         cap = max(700, self.root.winfo_screenheight() - 90)
@@ -1717,6 +1743,7 @@ class CourseMateGUI:
         "start_minimized": False, "beep_on_captcha": True, "on_finish": "none",
         "proxy": "", "log_level": "INFO", "cache": True,
         "speed": 1.5, "mute": True, "limit_max_minutes": 0,
+        "allow_high_speed": False, "captcha_popup": True,
         "answer_enabled": True, "retry_until_correct": True, "auto_submit": False,
     }
 
@@ -1758,6 +1785,9 @@ class CourseMateGUI:
         self.speed_var.set(d["speed"])
         self._on_speed_change(None)
         self.mute_var.set(d["mute"])
+        self.high_speed_var.set(d["allow_high_speed"])
+        self.captcha_popup_var.set(d["captcha_popup"])
+        self._apply_speed_ceiling()
         self.limit_var.set(str(int(d["limit_max_minutes"])))
 
         self.answer_enabled_var.set(d["answer_enabled"])
@@ -1886,6 +1916,8 @@ class CourseMateGUI:
             "items": items,
             "speed": round(self.speed_var.get(), 2),
             "mute": self.mute_var.get(),
+            "allow_high_speed": self.high_speed_var.get(),
+            "captcha_popup": self.captcha_popup_var.get(),
             "limit_max_minutes": limit,
             "answer_enabled": self.answer_enabled_var.get(),
             "retry_until_correct": self.retry_var.get(),
@@ -1928,6 +1960,9 @@ class CourseMateGUI:
         self.speed_var.set(cfg.speed)
         self._on_speed_change(None)
         self.mute_var.set(cfg.mute)
+        self.high_speed_var.set(cfg.allow_high_speed)
+        self.captcha_popup_var.set(cfg.captcha_popup)
+        self._apply_speed_ceiling()   # 上限要跟着开关走，否则滑块还停在 2.0
         self.limit_var.set(str(int(cfg.limit_max_minutes)))
         self.answer_enabled_var.set(cfg.answer_enabled)
         self.retry_var.set(cfg.retry_until_correct)
@@ -2120,8 +2155,44 @@ class CourseMateGUI:
             except queue.Empty:
                 break
             self._append_log(level, message, ts)
+            if "[需要你处理]" in message:
+                self._call_user_over(message)
             drained += 1
         self.root.after(120, self._drain_log_queue)
+
+    def _call_user_over(self, message: str) -> None:
+        """把人叫回来处理需要人工的事（目前只有人机验证）。
+
+        程序不破解验证码，只能等人来点。既然如此，"及时被发现"就是
+        这条路上唯一能优化的地方——窗口收在托盘里或被别的程序挡住时，
+        光响一声铃很容易错过，而错过的每一秒都是白等。
+        """
+        if not getattr(self, "captcha_popup_var", None) or not self.captcha_popup_var.get():
+            return
+        try:
+            self.root.deiconify()
+            self.root.lift()
+            # 短暂置顶再取消：不这样的话，别的程序全屏时窗口仍然浮不上来。
+            # 但一直置顶会挡住浏览器——而用户正要去浏览器里点验证码
+            self.root.attributes("-topmost", True)
+            self.root.after(1200, lambda: self._drop_topmost())
+            self.root.bell()
+        except tk.TclError:
+            pass
+        tray = getattr(self, "tray", None)
+        if tray is not None:
+            try:
+                tray.notify(message.replace("[需要你处理] ", ""), APP_NAME)
+            except Exception:
+                pass
+
+    def _drop_topmost(self) -> None:
+        """取消临时置顶——除非用户自己在设置里开了「窗口置顶」。"""
+        try:
+            if not self.on_top_var.get():
+                self.root.attributes("-topmost", False)
+        except tk.TclError:
+            pass
 
     def _append_log(self, level: str, message: str, ts: str | None = None) -> None:
         if ts is None:

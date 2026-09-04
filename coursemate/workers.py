@@ -152,7 +152,12 @@ async def captcha_worker(
             if not await adapter.detect_captcha(page):
                 continue
 
-            logger.warn("检测到人机验证，请回到浏览器手动完成验证...", shift=True)
+            # 这条带 [需要你处理] 前缀，界面据此把窗口叫到最前。
+            # 不破解验证码是刻意的，那么"让人及时知道该来处理了"就得做扎实：
+            # 窗口收在托盘里、被别的程序挡着时，光响一声铃很容易错过，
+            # 一错过就白等在那儿，限时刷课的时间也跟着耗掉
+            logger.warn("[需要你处理] 检测到人机验证，请回到浏览器手动完成验证...",
+                        shift=True)
             if config.beep_on_captcha:
                 print("\a", end="", flush=True)
 

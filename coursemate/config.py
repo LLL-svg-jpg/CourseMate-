@@ -11,8 +11,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-# 倍速上限。超过 2.0 在绝大多数平台会被判定为异常播放行为
+# 倍速范围。默认封顶 2.0——多数平台会把更高的倍速判成异常播放，
+# 轻则进度不计，重则触发人机验证。想要更快的人可以在设置里解锁，
+# 解锁后放到 SPEED_MAX_UNLOCKED，但风险自负
 SPEED_MIN, SPEED_MAX = 0.5, 2.0
+SPEED_MAX_UNLOCKED = 4.0
 
 
 class ConfigError(Exception):
@@ -221,13 +224,23 @@ class Config:
         return [i["url"] for i in self.course_items]
 
     @property
+    def allow_high_speed(self) -> bool:
+        """是否解锁 2 倍以上的倍速。默认关闭。"""
+        return bool(self._get_live("course", "allow_high_speed", False))
+
+    @property
+    def speed_ceiling(self) -> float:
+        return SPEED_MAX_UNLOCKED if self.allow_high_speed else SPEED_MAX
+
+    @property
     def speed(self) -> float:
         """热重载：跑着的时候改倍速立刻生效。"""
         try:
             raw = float(self._get_live("course", "speed", 1.0))
         except (TypeError, ValueError):
             raw = 1.0
-        return min(max(raw, SPEED_MIN), SPEED_MAX)
+        # 上限跟着开关走：没解锁时哪怕配置文件里手写了 8.0 也会被压回 2.0
+        return min(max(raw, SPEED_MIN), self.speed_ceiling)
 
     @property
     def mute(self) -> bool:
@@ -333,6 +346,15 @@ class Config:
     def autorun(self) -> bool:
         """打开软件后是否自动开始刷课。"""
         return bool(self._get("runtime", "autorun", False))
+
+    @property
+    def captcha_popup(self) -> bool:
+        """遇到人机验证时是否把主窗口叫到最前。
+
+        程序不破解验证码，只能靠人来处理；而窗口收在托盘里的时候，
+        光响一声铃很容易错过，一错过就白等在那儿。
+        """
+        return bool(self._get("runtime", "captcha_popup", True))
 
     @property
     def beep_on_captcha(self) -> bool:
