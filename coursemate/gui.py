@@ -617,15 +617,15 @@ class CourseMateGUI:
                   style="Hint.TLabel").grid(row=6, column=2, columnspan=2, sticky="w")
 
         sep = ttk.Separator(tab, orient="horizontal")
-        sep.grid(row=6, column=0, columnspan=4, sticky="ew", pady=10)
+        sep.grid(row=7, column=0, columnspan=4, sticky="ew", pady=10)
 
-        ttk.Label(tab, text="账号").grid(row=7, column=0, sticky="w")
+        ttk.Label(tab, text="账号").grid(row=8, column=0, sticky="w")
         self.username_var = tk.StringVar()
         ttk.Entry(tab, textvariable=self.username_var, width=24).grid(
-            row=7, column=1, sticky="w", padx=(8, 12))
-        ttk.Label(tab, text="密码").grid(row=7, column=2, sticky="e")
+            row=8, column=1, sticky="w", padx=(8, 12))
+        ttk.Label(tab, text="密码").grid(row=8, column=2, sticky="e")
         pwd_box = ttk.Frame(tab)
-        pwd_box.grid(row=7, column=3, sticky="w", padx=(8, 0))
+        pwd_box.grid(row=8, column=3, sticky="w", padx=(8, 0))
         self.password_var = tk.StringVar()
         self.password_entry = ttk.Entry(pwd_box, textvariable=self.password_var,
                                         width=20, show="●")
@@ -635,7 +635,7 @@ class CourseMateGUI:
                         command=self._toggle_password_visibility).pack(
             side="left", padx=(6, 0))
         ttk.Label(tab, text="留空即可 —— 首次运行时在弹出的浏览器里手动登录，之后会自动记住",
-                  style="Hint.TLabel").grid(row=8, column=0, columnspan=4, sticky="w", pady=(4, 0))
+                  style="Hint.TLabel").grid(row=9, column=0, columnspan=4, sticky="w", pady=(4, 0))
 
         tab.columnconfigure(1, weight=1)
         return tab

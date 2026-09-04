@@ -97,6 +97,42 @@ check("分类不是折叠条（都有实际内容）",
 check("Collapsible 类已移除",
       not hasattr(sys.modules["coursemate.gui"], "Collapsible"))
 
+# --- 没有控件叠在一起 ---
+print("\n== 控件不重叠 ==")
+
+
+def overlaps(tab):
+    """找出画在同一格里的控件。
+
+    grid 允许两个控件占同一行同一列，不报错，只是叠着画。
+    真出现时长这样：分隔线正好从输入框中间穿过去，屏幕上多一条横线，
+    看代码却完全正常——所以只能这样机械地查一遍。
+    """
+    seen, bad = {}, []
+    for w in tab.winfo_children():
+        try:
+            info = w.grid_info()
+            if not info:
+                continue
+            r, c = int(info["row"]), int(info["column"])
+            span_c = int(info.get("columnspan", 1))
+        except (KeyError, ValueError, tk.TclError):
+            continue
+        for col in range(c, c + span_c):
+            key = (r, col)
+            if key in seen:
+                bad.append((r, col, seen[key], str(w.winfo_class())))
+            seen[key] = str(w.winfo_class())
+    return bad
+
+
+for idx, name in enumerate(("课程", "AI 答题")):
+    tab = nb.winfo_children()[idx]
+    bad = overlaps(tab)
+    check(f"{name}页没有控件画在同一格",
+          not bad,
+          "; ".join(f"行{r}列{c}: {a} 与 {b} 重叠" for r, c, a, b in bad[:3]))
+
 # --- 2. 分类切换 ---
 print("\n== 分类切换 ==")
 app._show_section("浏览器")
