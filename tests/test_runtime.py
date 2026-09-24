@@ -189,6 +189,321 @@ def test_stop_signal() -> None:
         check("停止信号能中断刷课循环", result == "stopped", f"result={result}")
 
 
+def test_continuous_play_guard() -> None:
+    print("\n== 连续播放守卫 ==")
+    from coursemate.workers import ensure_playing
+
+    class FakeFrame:
+        def __init__(self):
+            self.script = ""
+
+        async def evaluate(self, script):
+            self.script = script
+            return True
+
+    frame = FakeFrame()
+    resumed = asyncio.run(ensure_playing(frame))
+    check("暂停时会立即续播", resumed is True)
+    check("安装 pause 事件守卫", "addEventListener('pause', resume)" in frame.script)
+    check("真正播放结束时不重播", "v.paused && !v.ended" in frame.script)
+
+
+def test_chaoxing_live_lesson_locators() -> None:
+    print("\n== 学习通章节目录重绘 ==")
+    from coursemate.platforms.chaoxing import ChaoxingAdapter
+
+    class Row:
+        def __init__(self, title, finished=False, item_id="cur1", item_class="", pending=None):
+            self.title, self.finished, self.clicked = title, finished, 0
+            self.item_id, self.item_class = item_id, item_class
+            self.pending = pending
+
+    class Locator:
+        def __init__(self, page, index=None, child=""):
+            self.page, self.index, self.child = page, index, child
+
+        @property
+        def first(self): return self
+
+        def nth(self, index): return Locator(self.page, index)
+        def locator(self, selector): return Locator(self.page, self.index, selector)
+        def row(self): return self.page.rows[self.index]
+
+        async def count(self):
+            if self.index is None:
+                return len(self.page.rows)
+            if self.child == ChaoxingAdapter.CATALOG_NAME_SEL:
+                return 1
+            if self.child == ".jobUnfinishCount":
+                return int(self.row().pending is not None)
+            return int(self.row().finished)
+
+        async def text_content(self): return self.row().title
+        async def click(self, timeout=0): self.row().clicked += 1
+        async def get_attribute(self, name):
+            if self.child == ".jobUnfinishCount" and name == "value":
+                return self.row().pending
+            return self.row().item_id if name == "id" else self.row().item_class
+
+    class Page:
+        def __init__(self, rows): self.rows = rows
+        async def wait_for_selector(self, *args, **kwargs): return None
+        def locator(self, selector): return Locator(self)
+
+    old_rows = [Row("第一节"), Row("第二节")]
+    page = Page(old_rows)
+    adapter = ChaoxingAdapter()
+    lessons = asyncio.run(adapter.list_lessons(page))
+    new_rows = [Row("第一节", finished=True), Row("第二节")]
+    page.rows = new_rows
+    asyncio.run(lessons[1].handle.click())
+    check("目录重绘后点击的是新节点", new_rows[1].clicked == 1 and old_rows[1].clicked == 0)
+    check("目录重绘后的完成标记仍可读取",
+          asyncio.run(adapter.lesson_finished(page, lessons[0])) is True)  # type: ignore[arg-type]
+
+    page.rows = [Row("第一章", item_id="chapter1", item_class="firstLayer"),
+                 Row("第一节", item_id="cur1")]
+    filtered = asyncio.run(adapter.list_lessons(page))
+    check("纯目录标题不会被当成视频", [item.title for item in filtered] == ["第一节"])
+
+    page.rows = [Row("待测验", item_id="cur1", pending="1"),
+                 Row("全部完成", item_id="cur2", pending="0")]
+    pending = asyncio.run(adapter.list_lessons(page))
+    check("学习通待完成任务数参与完成判定",
+          [item.finished for item in pending] == [False, True])
+
+
+def test_chaoxing_chapter_test_detection() -> None:
+    print("\n== 学习通章节测试识别 ==")
+    from coursemate.platforms.base import Lesson
+    from coursemate.platforms.chaoxing import ChaoxingAdapter
+
+    class VisibleNode:
+        async def is_visible(self): return True
+
+    class QuizFrame:
+        async def query_selector(self, selector):
+            return VisibleNode() if selector == ChaoxingAdapter.CHAPTER_TEST_SEL else None
+
+    class Page:
+        def __init__(self): self.frames = [QuizFrame()]
+        async def wait_for_timeout(self, ms): return None
+        async def query_selector(self, selector): return None
+
+    class Handle:
+        async def click(self, timeout=0): return None
+
+    class Adapter(ChaoxingAdapter):
+        async def prepare_page(self, page): return None
+        async def video_frame(self, page): return page
+
+    entered = asyncio.run(Adapter().enter_lesson(Page(), Lesson("章节测试", Handle())))  # type: ignore[arg-type]
+    check("独立章节测验交给主流程处理而不是误判无视频", entered is True)
+
+
+def test_manual_lesson_switch() -> None:
+    print("\n== 学习通手动切课接管 ==")
+    from coursemate.events import StudyClock
+    from coursemate.platforms.base import Lesson
+    from coursemate.runner import study_lesson
+
+    class Adapter:
+        async def detect_chapter_test(self, page): return False
+        async def enter_lesson(self, page, lesson): return True
+        async def active_lesson_key(self, page): return "cur-other"
+        async def lesson_finished(self, page, lesson): return False
+        async def get_progress(self, page): return "10%"
+
+    class Cfg:
+        limit_max_minutes = 0
+
+    result = asyncio.run(study_lesson(
+        object(), Adapter(), Lesson("原章节", object(), key="cur-old"),
+        StudyClock(), Cfg(),  # type: ignore[arg-type]
+    ))
+    check("用户切到任意章节后旧等待循环会让出控制", result == "switched", result)
+
+
+def test_previous_chapter_test_does_not_block_next_lesson() -> None:
+    print("\n== 上一章测验页不阻塞下一章 ==")
+    from coursemate.events import StudyClock
+    from coursemate.platforms.base import Lesson
+    from coursemate.runner import study_lesson
+
+    class Adapter:
+        entered = False
+        async def enter_lesson(self, page, lesson):
+            self.entered = True
+            return True
+        async def detect_chapter_test(self, page): return True
+
+    class Cfg:
+        limit_max_minutes = 0
+
+    adapter = Adapter()
+    result = asyncio.run(study_lesson(
+        object(), adapter, Lesson("下一章", object(), key="cur-next"),
+        StudyClock(), Cfg(),  # type: ignore[arg-type]
+    ))
+    check("即使页面残留上一章测验也会先进入目标章节", adapter.entered is True)
+    check("进入后检测当前章节测验", result == "chapter", result)
+
+
+def test_course_rebases_after_manual_switch() -> None:
+    print("\n== 学习通主循环跟随手动章节 ==")
+    from coursemate import runner
+    from coursemate.events import StudyClock
+    from coursemate.platforms.base import Lesson
+
+    lessons = [Lesson("第一节", object(), key="cur1"),
+               Lesson("第二节", object(), key="cur2")]
+
+    class Adapter:
+        active = "cur1"
+        async def open_course(self, page, url): return "测试课"
+        async def prepare_page(self, page): return None
+        async def list_lessons(self, page): return lessons
+        async def active_lesson_key(self, page): return self.active
+        async def open_chapter_test(self, page): return False
+
+    class Config:
+        answer_enabled = False
+        limit_max_minutes = 0
+
+    class Cache:
+        pass
+
+    adapter, visited = Adapter(), []
+    original = runner.study_lesson
+
+    async def fake_study(page, current_adapter, lesson, clock, config, should_stop):
+        visited.append(lesson.title)
+        if lesson.key == "cur1":
+            adapter.active = "cur2"
+            return "switched"
+        return "finished"
+
+    runner.study_lesson = fake_study
+    try:
+        asyncio.run(runner.study_course(
+            object(), adapter, "https://example.test", StudyClock(),
+            Config(), None, Cache(),  # type: ignore[arg-type]
+        ))
+    finally:
+        runner.study_lesson = original
+    check("手动从第一节切到第二节后从第二节接着跑",
+          visited == ["第一节", "第二节"], str(visited))
+
+
+def test_course_continues_after_chapter_fallback() -> None:
+    print("\n== 章节测验兜底暂存后继续下一章 ==")
+    from coursemate import runner
+    from coursemate.events import StudyClock
+    from coursemate.platforms.base import Lesson
+
+    lessons = [Lesson("第一节", object(), key="cur1"),
+               Lesson("第二节", object(), key="cur2")]
+
+    class Adapter:
+        async def open_course(self, page, url): return "测试课"
+        async def prepare_page(self, page): return None
+        async def list_lessons(self, page): return lessons
+        async def active_lesson_key(self, page): return "cur1"
+        async def open_chapter_test(self, page): return False
+
+    class Config:
+        answer_enabled = True
+        limit_max_minutes = 0
+
+    visited = []
+    original_study = runner.study_lesson
+    original_solve = runner.solve_chapter_test_once
+
+    async def fake_study(page, adapter, lesson, clock, config, should_stop):
+        visited.append(lesson.title)
+        return "chapter"
+
+    async def fake_solve(page, adapter, config, provider, cache):
+        return False
+
+    runner.study_lesson = fake_study
+    runner.solve_chapter_test_once = fake_solve
+    try:
+        asyncio.run(runner.study_course(
+            object(), Adapter(), "https://example.test", StudyClock(),
+            Config(), None, object(),  # type: ignore[arg-type]
+        ))
+    finally:
+        runner.study_lesson = original_study
+        runner.solve_chapter_test_once = original_solve
+    check("章节处理返回后继续下一章",
+          visited == ["第一节", "第二节"], str(visited))
+
+
+def test_completed_course_does_not_replay() -> None:
+    print("\n== 已完成课程不重播 ==")
+    from coursemate import runner
+    from coursemate.events import StudyClock
+    from coursemate.platforms.base import Lesson
+
+    class Adapter:
+        async def open_course(self, page, url): return "已完成课程"
+        async def prepare_page(self, page): return None
+        async def list_lessons(self, page):
+            return [Lesson("第一节", object(), finished=True, key="cur1")]
+
+    original = runner.study_lesson
+    visited = []
+
+    async def fake_study(*args):
+        visited.append(True)
+        return "finished"
+
+    runner.study_lesson = fake_study
+    try:
+        result = asyncio.run(runner.study_course(
+            object(), Adapter(), "https://example.test", StudyClock(),
+            object(), None, object(),  # type: ignore[arg-type]
+        ))
+    finally:
+        runner.study_lesson = original
+    check("目录已全部完成时不进入视频重播", result and not visited)
+
+
+def test_chaoxing_replayed_tail_skip() -> None:
+    print("\n== 学习通重复尾段跳过 ==")
+    from coursemate.platforms.chaoxing import ChaoxingAdapter
+
+    class Frame:
+        def __init__(self, result): self.result, self.script = result, ""
+        async def evaluate(self, script): self.script = script; return self.result
+
+    frame = Frame(58.5)
+    skipped = asyncio.run(ChaoxingAdapter()._skip_replayed_tail(frame))  # type: ignore[arg-type]
+    check("恢复到最后一分钟时会跳过重复尾段", abs(skipped - 58.5) < 0.01)
+    check("新视频前 15 秒不会误跳", "v.currentTime < 15" in frame.script)
+    check("只处理最后 75 秒", "remaining > 75" in frame.script)
+
+
+def test_chaoxing_blank_page_not_logged_in() -> None:
+    print("\n== 学习通登录入口 ==")
+    from coursemate.platforms.chaoxing import ChaoxingAdapter
+
+    class Page:
+        def __init__(self, url, title): self.url, self._title = url, title
+        async def title(self): return self._title
+
+    adapter = ChaoxingAdapter()
+    blank = asyncio.run(adapter.is_logged_in(Page("about:blank", "")))  # type: ignore[arg-type]
+    course = asyncio.run(adapter.is_logged_in(
+        Page("https://mooc1.chaoxing.com/mycourse/studentstudy", "学生学习页面")))  # type: ignore[arg-type]
+    login = asyncio.run(adapter.is_logged_in(
+        Page("https://passport2.chaoxing.com/login", "用户登录")))  # type: ignore[arg-type]
+    check("新开空白页不会再被误判为已登录", blank is False)
+    check("真正课程页仍识别为已登录", course is True)
+    check("登录页识别为未登录", login is False)
+
+
 def test_config_roundtrip() -> None:
     print("\n== 配置往返 ==")
     import tempfile
@@ -229,7 +544,15 @@ if __name__ == "__main__":
     print("CourseMate 运行时行为测试")
     install_stub()
     for fn in (test_selector_fallback, test_lesson_finished_markers,
-               test_stop_signal, test_config_roundtrip):
+               test_stop_signal, test_continuous_play_guard,
+               test_chaoxing_live_lesson_locators, test_chaoxing_chapter_test_detection,
+               test_manual_lesson_switch, test_previous_chapter_test_does_not_block_next_lesson,
+               test_course_rebases_after_manual_switch,
+               test_course_continues_after_chapter_fallback,
+               test_completed_course_does_not_replay,
+               test_chaoxing_replayed_tail_skip,
+               test_chaoxing_blank_page_not_logged_in,
+               test_config_roundtrip):
         fn()
     print(f"\n通过 {len(PASS)} 项，失败 {len(FAIL)} 项")
     if FAIL:

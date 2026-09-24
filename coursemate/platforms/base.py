@@ -25,10 +25,11 @@ class Lesson:
     只负责传回给适配器。
     """
 
-    def __init__(self, title: str, handle: Any, finished: bool = False):
+    def __init__(self, title: str, handle: Any, finished: bool = False, key: str = ""):
         self.title = title
         self.handle = handle
         self.finished = finished
+        self.key = key
 
     def __repr__(self) -> str:
         return f"<Lesson {self.title!r} finished={self.finished}>"
@@ -83,6 +84,18 @@ class PlatformAdapter(ABC):
     async def prepare_page(self, page: Page) -> None:
         """进入课程后的一次性处理：关弹窗、切布局等。默认无操作。"""
         return None
+
+    async def active_lesson_key(self, page: Page) -> str:
+        """当前由网页选中的章节。用于识别用户手动切课。"""
+        return ""
+
+    async def detect_chapter_test(self, page: Page) -> bool:
+        """当前是否位于独立章节测验，而不是视频内弹题。"""
+        return False
+
+    async def open_chapter_test(self, page: Page) -> bool:
+        """当前章节存在测验时打开它。没有则返回 False。"""
+        return False
 
     # ---------- 答题支线 ----------
 

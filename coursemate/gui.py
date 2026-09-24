@@ -594,8 +594,17 @@ class CourseMateGUI:
                                      variable=self.speed_var,
                                      orient="horizontal", command=self._on_speed_change)
         self.speed_scale.grid(row=3, column=1, sticky="ew", padx=(8, 8))
-        self.speed_label = ttk.Label(tab, text="1.5x", width=6, font=FONT_BOLD)
-        self.speed_label.grid(row=3, column=2, sticky="w")
+        speed_value = ttk.Frame(tab)
+        speed_value.grid(row=3, column=2, sticky="w")
+        self.speed_label = ttk.Label(speed_value, text="1.5x", width=6, font=FONT_BOLD)
+        self.speed_label.pack(side="left")
+        self.speed_input_var = tk.StringVar(value="1.5")
+        self.speed_input = ttk.Entry(
+            speed_value, textvariable=self.speed_input_var, width=5, justify="center")
+        self.speed_input.pack(side="left", padx=(4, 0))
+        self.speed_input.bind("<Return>", self._apply_speed_input)
+        self.speed_input.bind("<FocusOut>", self._apply_speed_input)
+        ttk.Label(speed_value, text="×", style="Hint.TLabel").pack(side="left", padx=(2, 0))
         self.mute_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(tab, text="静音播放", variable=self.mute_var).grid(
             row=3, column=3, sticky="w", padx=(12, 0))
@@ -686,7 +695,7 @@ class CourseMateGUI:
         ttk.Checkbutton(tab, text="显示", variable=self.show_key_var,
                         command=self._toggle_key_visibility).grid(
             row=6, column=3, sticky="w", pady=(8, 0))
-        ttk.Label(tab, text="不填也能刷课 —— 会直接按选项顺序逐个尝试，只是多点几次",
+        ttk.Label(tab, text="不填也能播放；视频弹题可按选项重试，独立章节测验不会乱猜",
                   style="Hint.TLabel").grid(row=7, column=0, columnspan=4, sticky="w")
 
         ttk.Label(tab, text="接口地址").grid(row=8, column=0, sticky="w", pady=(8, 0))
@@ -701,19 +710,19 @@ class CourseMateGUI:
             row=10, column=0, columnspan=4, sticky="ew", pady=10)
 
         self.retry_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(tab, text="答错自动换答案重试，直到答对",
+        ttk.Checkbutton(tab, text="视频弹题答错后自动换答案重试",
                         variable=self.retry_var,
                         command=self._toggle_retry_mode).grid(
             row=11, column=0, columnspan=4, sticky="w")
-        ttk.Label(tab, text="单选逐个试、多选换组合试，答对后自动点确认继续播放。"
-                            "开启时必然会提交答案 —— 不提交就拿不到对错反馈",
+        ttk.Label(tab, text="只用于视频播放中弹出的题；独立章节测验只采用题库/AI答案一次，绝不枚举试错",
                   style="Hint.TLabel").grid(row=12, column=0, columnspan=4, sticky="w")
-        ttk.Label(tab, text="这也是不填 API Key 也能答对题的原因",
+        ttk.Label(tab, text="章节测验使用防复制字体时会把渲染截图发给支持图片的模型",
                   style="Hint.TLabel").grid(row=13, column=0, columnspan=4, sticky="w")
 
         self.auto_submit_var = tk.BooleanVar(value=False)
         self.auto_submit_check = ttk.Checkbutton(
-            tab, text="保守模式下也提交那一次作答", variable=self.auto_submit_var)
+            tab, text="章节测验由 AI 全部填完后自动提交（不自动试错）",
+            variable=self.auto_submit_var)
         self.auto_submit_check.grid(row=14, column=0, columnspan=4, sticky="w", padx=(20, 0))
 
         ttk.Label(tab, text="题库缓存、日志、开机自启等选项在「设置」页",
@@ -1037,9 +1046,32 @@ class CourseMateGUI:
     def _on_speed_change(self, _value) -> None:
         speed = self.speed_var.get()
         self.speed_label.configure(text=f"{speed:.2f}x")
+        if hasattr(self, "speed_input_var"):
+            self.speed_input_var.set(f"{speed:g}")
         # 超过 2 倍就把数字标红，提醒这一档已经不保险了
         self.speed_label.configure(
             foreground="#c62828" if speed > SPEED_MAX + 0.001 else "")
+
+    def _apply_speed_input(self, _event=None) -> str | None:
+        """把输入框中的数字应用到倍速滑块。"""
+        previous = self.speed_var.get()
+        raw = self.speed_input_var.get().strip().lower().rstrip("x×")
+        try:
+            speed = float(raw)
+        except ValueError:
+            self.root.bell()
+            speed = self.speed_var.get()
+        ceiling = SPEED_MAX_UNLOCKED if self.high_speed_var.get() else SPEED_MAX
+        speed = max(SPEED_MIN, min(ceiling, speed))
+        self.speed_var.set(speed)
+        self._on_speed_change(None)
+        worker = getattr(self, "worker", None)
+        if abs(speed - previous) > 0.001 and worker and worker.is_alive():
+            if self.save(silent=True):
+                self._append_log("SYSTEM", f"播放倍速已切换为 {speed:g}×（最多 3 秒内应用）。")
+        if _event is not None and getattr(_event, "keysym", "") == "Return":
+            return "break"
+        return None
 
     def _apply_speed_ceiling(self) -> None:
         """解锁开关变动时，调整倍速滑块的上限。
@@ -1157,9 +1189,9 @@ class CourseMateGUI:
         self._toggle_retry_mode()
 
     def _toggle_retry_mode(self) -> None:
-        """试错模式下提交是内在要求，"是否提交"这个选项就没有意义了。"""
-        retry = self.retry_var.get()
-        self.auto_submit_check.configure(state="disabled" if retry else "normal")
+        """视频弹题试错与章节测验提交互不影响。"""
+        state = "normal" if self.answer_enabled_var.get() else "disabled"
+        self.auto_submit_check.configure(state=state)
 
     # ---------------- 界面与网络设置 ----------------
 
@@ -1818,19 +1850,36 @@ class CourseMateGUI:
         messagebox.showinfo("已清空", "配置已删除，请重新打开软件。", parent=self.root)
         self._append_log("SYSTEM", "配置文件已删除。")
 
+    @staticmethod
+    def _dependency_version(module_name: str) -> str:
+        """以实际能否导入为准；打包版不一定保留 pip 的 metadata。"""
+        try:
+            import importlib
+            import importlib.metadata as md
+
+            module = importlib.import_module(module_name)
+            try:
+                return md.version(module_name)
+            except Exception:
+                return str(getattr(module, "__version__", "") or "已内置")
+        except Exception:
+            return ""
+
     def _show_deps(self) -> None:
         rows = []
         for mod, why in (("playwright", "浏览器驱动，必需"),
                          ("anthropic", "调用 Claude"),
                          ("httpx", "调用国内大模型")):
-            try:
-                import importlib.metadata as md
-
-                rows.append(f"  ✓ {mod} {md.version(mod)}  —— {why}")
-            except Exception:
+            version = self._dependency_version(mod)
+            if version:
+                rows.append(f"  ✓ {mod} {version}  —— {why}")
+            else:
                 rows.append(f"  ✗ {mod} 未安装  —— {why}")
         text = "\n".join(rows)
         self.deps_label.configure(text=text.replace("  ", "").replace("\n", "   "))
+        if self.answer_enabled_var.get():
+            key_state = "已填写" if self.api_key_var.get().strip() else "未填写（无法实际调用）"
+            text += f"\n\n当前 AI：{providers.get(self.vendor_key()).label}\nAPI Key：{key_state}"
         messagebox.showinfo("运行依赖", text +
                             "\n\n缺少必需项时可运行「安装依赖.bat」。", parent=self.root)
 
@@ -1852,18 +1901,11 @@ class CourseMateGUI:
         except Exception:
             pass
         self._refresh_cache_stat()
-        try:
-            import importlib.metadata as md
-
-            parts = []
-            for mod in ("playwright", "anthropic", "httpx"):
-                try:
-                    parts.append(f"{mod} {md.version(mod)}")
-                except Exception:
-                    parts.append(f"{mod} 未装")
-            self.deps_label.configure(text="   ".join(parts))
-        except Exception:
-            pass
+        parts = []
+        for mod in ("playwright", "anthropic", "httpx"):
+            version = self._dependency_version(mod)
+            parts.append(f"{mod} {version}" if version else f"{mod} 未装")
+        self.deps_label.configure(text="   ".join(parts))
 
     def _pick_browser(self) -> None:
         path = filedialog.askopenfilename(
@@ -1976,7 +2018,7 @@ class CourseMateGUI:
         raw_key = (cfg._raw.get("answer", {}) or {}).get("api_key", "")
         self.api_key_var.set(str(raw_key))
         self.model_var.set(cfg.model)
-        self.base_url_var.set(cfg.base_url)
+        self.base_url_var.set(cfg.base_url or prov.base_url)
         self.cache_var.set(cfg.answer_cache)
         self.log_level_var.set(cfg.log_level)
         self.beep_var.set(cfg.beep_on_captcha)
@@ -2167,16 +2209,42 @@ class CourseMateGUI:
         这条路上唯一能优化的地方——窗口收在托盘里或被别的程序挡住时，
         光响一声铃很容易错过，而错过的每一秒都是白等。
         """
-        if not getattr(self, "captcha_popup_var", None) or not self.captcha_popup_var.get():
+        beep = bool(getattr(self, "beep_var", None) and self.beep_var.get())
+        popup = bool(getattr(self, "captcha_popup_var", None)
+                     and self.captcha_popup_var.get())
+        if not beep and not popup:
+            return
+        if beep:
+            try:
+                import winsound
+
+                winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
+            except Exception:
+                try:
+                    self.root.bell()
+                except tk.TclError:
+                    pass
+        if not popup:
             return
         try:
             self.root.deiconify()
+            self.root.state("normal")
             self.root.lift()
             # 短暂置顶再取消：不这样的话，别的程序全屏时窗口仍然浮不上来。
             # 但一直置顶会挡住浏览器——而用户正要去浏览器里点验证码
             self.root.attributes("-topmost", True)
+            self.root.focus_force()
+            # Windows 有时会拦截普通 lift；显式请求前台并闪烁任务栏作兜底。
+            try:
+                import ctypes
+
+                hwnd = int(self.root.winfo_id())
+                ctypes.windll.user32.ShowWindow(hwnd, 9)
+                ctypes.windll.user32.SetForegroundWindow(hwnd)
+                ctypes.windll.user32.FlashWindow(hwnd, True)
+            except Exception:
+                pass
             self.root.after(1200, lambda: self._drop_topmost())
-            self.root.bell()
         except tk.TclError:
             pass
         tray = getattr(self, "tray", None)
@@ -2200,6 +2268,13 @@ class CourseMateGUI:
 
             ts = datetime.now().strftime("%H:%M:%S")
         tag = level if level in COLORS else "INFO"
+        view = self.log_text.yview()
+        at_bottom = not view or view[1] >= 0.999
+        anchor = ""
+        if not at_bottom:
+            anchor = self.log_text.index("@0,0")
+            self.log_text.mark_set("_log_view_anchor", anchor)
+            self.log_text.mark_gravity("_log_view_anchor", "left")
         self.log_text.configure(state="normal")
 
         if level == "PROGRESS":
@@ -2219,7 +2294,12 @@ class CourseMateGUI:
             self._log_lines -= trim
 
         self.log_text.configure(state="disabled")
-        self.log_text.see("end")
+        if at_bottom:
+            self.log_text.see("end")
+        elif anchor:
+            # 用户正在翻旧日志时保持原位置；只有本来就在底部才追随新日志。
+            self.log_text.yview("_log_view_anchor")
+            self.log_text.mark_unset("_log_view_anchor")
         if getattr(self, "log_collapsed", False):
             self.log_tail_label.configure(text=f"最新：{message[:46]}")
 

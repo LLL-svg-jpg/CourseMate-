@@ -46,6 +46,14 @@ class Question:
     stem: str
     options: list[Option] = field(default_factory=list)
     qtype: QuestionType = "unknown"
+    # popup 是视频内弹题；chapter 是独立章节测验。
+    # 章节测验不能套用视频弹题的“逐个试到对”策略。
+    context: str = "popup"
+    index: int = -1
+    # 学习通章节测验使用防复制字体，DOM 文本会乱码；截图保留真实渲染文字。
+    image_data_url: str = ""
+    # 独立章节测验重新进入时可能已保存答案。已有选择只记录、绝不覆盖。
+    selected_keys: list[str] = field(default_factory=list)
 
     @property
     def fingerprint(self) -> str:

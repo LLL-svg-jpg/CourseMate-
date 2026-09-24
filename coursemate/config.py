@@ -293,7 +293,14 @@ class Config:
 
     @property
     def base_url(self) -> str:
-        return str(self._get("answer", "base_url", "")).strip()
+        value = str(self._get("answer", "base_url", "")).strip()
+        if value:
+            return value
+        # 旧配置可能只保存了服务商，没有保存自动带出的地址。
+        # 内置服务商可安全回落到自己的官方兼容端点。
+        from .providers import get
+
+        return get(self.answer_provider).base_url
 
     @property
     def answer_timeout(self) -> float:
@@ -369,8 +376,8 @@ class Config:
             problems.append(
                 "answer.enabled = true 但未配置 api_key"
                 "（也可设置环境变量 ANTHROPIC_API_KEY / OPENAI_API_KEY），"
-                "否则遇题只能暂停等你处理。"
+                "视频弹题仍可按选项重试，但独立章节测验不会自动乱猜。"
             )
-        if self.answer_provider == "openai_compatible" and not self.base_url:
-            problems.append("provider = openai_compatible 时必须填写 base_url。")
+        if self.answer_provider != "anthropic" and not self.base_url:
+            problems.append("当前服务商缺少 base_url，请填写接口地址。")
         return problems
