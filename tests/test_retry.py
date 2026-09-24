@@ -242,11 +242,158 @@ def test_non_choice() -> None:
     check("填空题不自动作答", ok is False and a.submits == 0)
 
 
+def test_chapter_test_no_bruteforce() -> None:
+    print("\n== 独立章节测验只用 AI 一次 ==")
+    from coursemate.answer.base import AnswerResult, Option, Question
+    from coursemate.workers import solve_chapter_test_once
+
+    questions = [
+        Question("题一", [Option("A", "甲"), Option("B", "乙")],
+                 "single", context="chapter", index=0),
+        Question("题二", [Option("A", "对"), Option("B", "错")],
+                 "judge", context="chapter", index=1),
+    ]
+
+    class Adapter:
+        def __init__(self): self.fills, self.submits = [], []
+        async def extract_questions(self, page): return questions
+        async def fill_answer(self, page, question, keys, result):
+            self.fills.append((question.index, tuple(keys)))
+            return True
+        async def submit_answer(self, page, auto_submit):
+            self.submits.append(auto_submit)
+            return True
+
+    class Provider:
+        async def solve(self, question):
+            return AnswerResult(option_keys=["B"], confidence=0.8, source="ai")
+
+    class Config:
+        answer_cache = False
+        auto_submit = True
+        retry_until_correct = True
+
+    adapter = Adapter()
+    ok = asyncio.run(solve_chapter_test_once(
+        None, adapter, Config(), Provider(), FakeCache()))
+    check("章节测验每题只填一次", ok and adapter.fills == [(0, ("B",)), (1, ("B",))],
+          str(adapter.fills))
+    check("章节测验整套只提交一次", adapter.submits == [True], str(adapter.submits))
+    check("视频弹题的重试开关不会让章节题暴力试错", len(adapter.fills) == len(questions))
+
+
+def test_chapter_preserves_existing_answers() -> None:
+    print("\n== 独立章节测验保留已有答案 ==")
+    from coursemate.answer.base import AnswerResult, Option, Question
+    from coursemate.workers import solve_chapter_test_once
+
+    questions = [
+        Question("已有答案", [Option("A", "甲"), Option("B", "乙")],
+                 "single", context="chapter", index=0, selected_keys=["A"]),
+        Question("尚未回答", [Option("A", "甲"), Option("B", "乙")],
+                 "single", context="chapter", index=1),
+    ]
+
+    class Adapter:
+        def __init__(self): self.fills, self.submits = [], []
+        async def extract_questions(self, page): return questions
+        async def fill_answer(self, page, question, keys, result):
+            self.fills.append((question.index, tuple(keys)))
+            return True
+        async def submit_answer(self, page, auto_submit):
+            self.submits.append(auto_submit)
+            return True
+
+    class Provider:
+        def __init__(self): self.calls = []
+        async def solve(self, question):
+            self.calls.append(question.index)
+            return AnswerResult(option_keys=["B"], confidence=0.8, source="ai")
+
+    class Config:
+        answer_cache = False
+        auto_submit = True
+
+    adapter, provider = Adapter(), Provider()
+    ok = asyncio.run(solve_chapter_test_once(
+        None, adapter, Config(), provider, FakeCache()))
+    check("已有答案不再调用 AI", provider.calls == [1], str(provider.calls))
+    check("已有答案不被重新点选覆盖", adapter.fills == [(1, ("B",))], str(adapter.fills))
+    check("已有答案计入完整度并可提交", ok and adapter.submits == [True])
+
+
+def test_chapter_submit_must_be_confirmed() -> None:
+    print("\n== 独立章节测验提交必须确认成功 ==")
+    from coursemate.answer.base import Option, Question
+    from coursemate.workers import solve_chapter_test_once
+
+    questions = [Question(
+        "已保存", [Option("A", "甲"), Option("B", "乙")], "single",
+        context="chapter", index=0, selected_keys=["A"],
+    )]
+
+    class Adapter:
+        def __init__(self): self.submits = []
+        async def extract_questions(self, page): return questions
+        async def fill_answer(self, page, question, keys, result):
+            raise AssertionError("已有答案不应重新填写")
+        async def submit_answer(self, page, auto_submit):
+            self.submits.append(auto_submit)
+            return not auto_submit
+
+    class Config:
+        answer_cache = False
+        auto_submit = True
+
+    adapter = Adapter()
+    ok = asyncio.run(solve_chapter_test_once(
+        None, adapter, Config(), None, FakeCache()))
+    check("正式提交失败后改为暂存", adapter.submits == [True, False], str(adapter.submits))
+    check("暂存成功后继续无人值守流程", ok is True)
+
+
+def test_chapter_partial_answers_are_saved() -> None:
+    print("\n== 独立章节测验部分答案仍暂存 ==")
+    from coursemate.answer.base import AnswerResult, Option, Question
+    from coursemate.workers import solve_chapter_test_once
+
+    questions = [
+        Question("已有答案", [Option("A", "甲"), Option("B", "乙")],
+                 "single", context="chapter", index=0, selected_keys=["A"]),
+        Question("无法回答", [Option("A", "甲"), Option("B", "乙")],
+                 "single", context="chapter", index=1),
+    ]
+
+    class Adapter:
+        def __init__(self): self.submits = []
+        async def extract_questions(self, page): return questions
+        async def fill_answer(self, page, question, keys, result): return False
+        async def submit_answer(self, page, auto_submit):
+            self.submits.append(auto_submit)
+            return True
+
+    class Provider:
+        async def solve(self, question): return AnswerResult()
+
+    class Config:
+        answer_cache = False
+        auto_submit = True
+
+    adapter = Adapter()
+    ok = asyncio.run(solve_chapter_test_once(
+        None, adapter, Config(), Provider(), FakeCache()))
+    check("有空题时不会正式提交", adapter.submits == [False], str(adapter.submits))
+    check("部分答案暂存成功后可以安全离开", ok is True)
+
+
 if __name__ == "__main__":
     print("CourseMate 试错答题测试")
     install_stub()
     for fn in (test_single_order, test_judge, test_multiple_order, test_no_options,
-               test_retry_loop, test_non_choice):
+               test_retry_loop, test_non_choice, test_chapter_test_no_bruteforce,
+               test_chapter_preserves_existing_answers,
+               test_chapter_submit_must_be_confirmed,
+               test_chapter_partial_answers_are_saved):
         fn()
     print(f"\n通过 {len(PASS)} 项，失败 {len(FAIL)} 项")
     if FAIL:

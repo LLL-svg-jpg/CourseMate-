@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 
-from playwright.async_api import Page
+from playwright.async_api import Frame, Page
 
 from .answer.ai import match_option
 from .answer.base import AnswerProvider, AnswerResult
@@ -22,6 +22,32 @@ from .logger import Logger
 from .platforms.base import PlatformAdapter
 
 logger = Logger()
+
+_KEEP_PLAYING_JS = """
+() => {
+    const v = document.querySelector('video');
+    if (!v) return false;
+    v.__coursemateDoneStopped = false;
+
+    const resume = () => {
+        if (v.ended || !v.isConnected) return;
+        const result = v.play();
+        if (result && typeof result.catch === 'function') result.catch(() => {});
+    };
+
+    // 平台可能每隔几秒主动 pause。只靠 Python 轮询续播会留下最多 2 秒的
+    // 可见停顿；给当前 video 装一次事件守卫，暂停发生后立刻恢复。
+    if (!v.__coursemateKeepPlaying) {
+        v.__coursemateKeepPlaying = true;
+        v.__coursemateResume = resume;
+        v.addEventListener('pause', resume);
+    }
+
+    const shouldResume = v.paused && !v.ended;
+    if (shouldResume) resume();
+    return shouldResume;
+}
+"""
 
 # 单个弹题的总耗时上限。超过就强行关窗继续播——
 # 卡在一道题上不动，比这道题没答对严重得多。
@@ -67,6 +93,23 @@ def _handle(exc: BaseException, who: str) -> bool:
     return False
 
 
+async def ensure_playing(frame: Page | Frame) -> bool:
+    """立即续播，并防止页面脚本造成肉眼可见的反复暂停。"""
+    return bool(await frame.evaluate(_KEEP_PLAYING_JS))
+
+
+async def stop_completed_playback(frame: Page | Frame) -> None:
+    """视频任务已完成时撤销自动续播，避免重新打开后从头播放。"""
+    await frame.evaluate("""() => {
+        const v = document.querySelector('video');
+        if (!v || v.__coursemateDoneStopped) return;
+        if (v.__coursemateResume) v.removeEventListener('pause', v.__coursemateResume);
+        v.__coursemateKeepPlaying = false;
+        v.__coursemateDoneStopped = true;
+        if (v.currentTime < 5 && !v.paused) v.pause();
+    }""")
+
+
 async def task_monitor(tasks: list[asyncio.Task]) -> None:
     """监控其余协程，任何一个异常退出都要让用户知道。"""
     reported: set[asyncio.Task] = set()
@@ -91,23 +134,18 @@ async def playback_worker(page: Page, adapter: PlatformAdapter) -> None:
     """
     while True:
         try:
-            await asyncio.sleep(2)
             frame = await adapter.video_frame(page)
-            paused = await frame.evaluate(
-                "(() => { const v = document.querySelector('video');"
-                " return v ? v.paused : null; })()"
-            )
-            if paused is True:
-                await frame.evaluate(
-                    "(() => { const v = document.querySelector('video');"
-                    " if (v) v.play().catch(() => {}); })()"
-                )
+            completed = getattr(adapter, "video_task_completed", None)
+            if completed is not None and await completed(page):
+                await stop_completed_playback(frame)
+            elif await ensure_playing(frame):
                 logger.debug("检测到视频暂停，已恢复播放。")
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             if _handle(exc, "续播模块"):
                 return
+        await asyncio.sleep(2)
 
 
 async def tuning_worker(page: Page, adapter: PlatformAdapter, config: Config) -> None:
@@ -267,6 +305,98 @@ async def solve_one_question(
 
     logger.warn(f"  已尝试 {len(attempts)} 次仍未答对，放弃本题以免卡住播放。")
     return False
+
+
+async def solve_chapter_test_once(
+    page: Page,
+    adapter: PlatformAdapter,
+    config: Config,
+    provider: AnswerProvider | None,
+    cache: AnswerCache,
+) -> bool:
+    """处理一次独立章节测验；返回当前页面是否可以安全离开。"""
+    questions = await adapter.extract_questions(page)
+    if not questions:
+        logger.warn("检测到章节测验，但未能提取题目；已跳过，不会乱点。")
+        return True
+
+    logger.info(
+        f"检测到独立章节测验，共 {len(questions)} 题。"
+        "此处只采用题库/AI答案一次，不执行视频弹题的换答案试错。",
+        shift=True,
+    )
+    answered = 0
+    preserved = 0
+    for question in questions:
+        if not question.is_choice:
+            logger.warn(f"  {question.describe()} 不是选择题，已留给你手动处理。")
+            continue
+        if question.selected_keys:
+            preserved += 1
+            logger.info(
+                f"  第 {question.index + 1} 题已有答案 "
+                f"{'+'.join(question.selected_keys)}，已保留并跳过。"
+            )
+            continue
+        result = cache.get(question) if config.answer_cache else None
+        if result is None and provider is not None:
+            result = await provider.solve(question)
+        if result is None or result.empty:
+            logger.warn(f"  {question.describe()} 没有可靠答案，未填写。")
+            continue
+        keys = match_option(result, question)
+        if not keys:
+            logger.warn(f"  {question.describe()} 的 AI 答案无法匹配页面选项，未填写。")
+            continue
+        if await adapter.fill_answer(page, question, keys, result):
+            answered += 1
+            logger.info(f"  第 {question.index + 1} 题已填写：{'+'.join(keys)}")
+
+    if answered == 0 and preserved == 0:
+        logger.warn("章节测验没有任何题被可靠填写，已跳过且未提交。")
+        return True
+
+    completed = answered + preserved
+    all_answered = completed == len(questions)
+    auto_submit = bool(config.auto_submit and all_answered)
+    action_ok = await adapter.submit_answer(page, auto_submit=auto_submit)
+    if auto_submit and action_ok:
+        logger.info(
+            f"章节测验 {completed}/{len(questions)} 题已有答案并确认提交。", shift=True
+        )
+    elif auto_submit:
+        saved = await adapter.submit_answer(page, auto_submit=False)
+        if saved:
+            logger.warn(
+                f"章节测验 {completed}/{len(questions)} 题未确认提交成功，"
+                "已改为暂存并继续下一章。",
+                shift=True,
+            )
+        else:
+            logger.warn(
+                f"章节测验 {completed}/{len(questions)} 题未确认提交成功，"
+                "再次暂存也未获成功证据；为保持无人值守，将继续下一章。",
+                shift=True,
+            )
+    else:
+        why = "存在未能可靠作答的题" if not all_answered else "未开启章节测验自动提交"
+        if action_ok:
+            logger.info(
+                f"章节测验已有答案 {completed}/{len(questions)} 题并暂存（{why}），"
+                "不会自动试错。",
+                shift=True,
+            )
+        else:
+            retry_saved = await adapter.submit_answer(page, auto_submit=False)
+            if retry_saved:
+                logger.warn("章节测验首次暂存未确认，重试暂存成功，继续下一章。", shift=True)
+            else:
+                logger.warn(
+                    "章节测验两次暂存均未获成功证据；为保持无人值守，将继续下一章。",
+                    shift=True,
+                )
+    # 无人值守模式不能因平台没有回执而卡在本章；失败已尽力暂存并明确报警。
+    return True
 
 
 async def question_worker(

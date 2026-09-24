@@ -674,6 +674,24 @@ root.update_idletasks()
 check("再展开恢复", app.log_arrow["text"] == "▼" and log_weight() > 0)
 check("箭头没被宽度截断", app.log_arrow["width"] >= 3, str(app.log_arrow["width"]))
 
+print("\n== 日志手动滚动位置 ==")
+for i in range(120):
+    app._append_log("INFO", f"滚动测试第 {i} 行")
+root.update_idletasks()
+app.log_text.yview_moveto(0.25)
+root.update_idletasks()
+before_log_top = app.log_text.index("@0,0")
+app._append_log("INFO", "后台新日志")
+root.update_idletasks()
+after_log_top = app.log_text.index("@0,0")
+check("翻看旧日志时新消息不会把视图拽走", before_log_top == after_log_top,
+      f"{before_log_top} -> {after_log_top}")
+app.log_text.see("end")
+app._append_log("INFO", "底部新日志")
+root.update_idletasks()
+check("原本在底部时仍会自动跟随", app.log_text.yview()[1] >= 0.999,
+      str(app.log_text.yview()))
+
 # 设置页改成分类式后不再有固定高度，曾经把日志区整个顶出了窗口
 print("\n== 日志区不能被标签页挤没 ==")
 for geom in ("1100x820", "1000x700"):

@@ -14,6 +14,7 @@ import asyncio
 from playwright.async_api import BrowserContext, Page, async_playwright
 
 from .answer.ai import build_provider
+from .answer.base import AnswerProvider
 from .answer.cache import AnswerCache
 from .browser import launch, persist_login, clear_cookies
 from .config import Config
@@ -27,6 +28,7 @@ from .workers import (
     is_closed,
     playback_worker,
     question_worker,
+    solve_chapter_test_once,
     task_monitor,
     tuning_worker,
 )
@@ -61,9 +63,11 @@ async def study_lesson(
     page: Page, adapter: PlatformAdapter, lesson: Lesson, clock: StudyClock,
     config: Config, should_stop=_noop_stop
 ) -> str:
-    """播完一节。返回结束原因：finished / timeout / limit / skipped。"""
+    """播完一节。也会识别用户手动切课和独立章节测验。"""
     if not await adapter.enter_lesson(page, lesson):
         return "skipped"
+    if await adapter.detect_chapter_test(page):
+        return "chapter"
 
     logger.info(f"正在学习：{lesson.title}")
     waited = 0.0
@@ -76,6 +80,11 @@ async def study_lesson(
             logger.warn("本节等待超时，跳到下一节。", shift=True)
             return "timeout"
         try:
+            active = await adapter.active_lesson_key(page)
+            if lesson.key and active and active != lesson.key:
+                return "switched"
+            if await adapter.detect_chapter_test(page):
+                return "chapter"
             if await adapter.lesson_finished(page, lesson):
                 return "finished"
             progress = await adapter.get_progress(page)
@@ -95,7 +104,8 @@ async def study_lesson(
 
 async def study_course(
     page: Page, adapter: PlatformAdapter, url: str, clock: StudyClock,
-    config: Config, should_stop=_noop_stop
+    config: Config, provider: AnswerProvider | None, cache: AnswerCache,
+    should_stop=_noop_stop,
 ) -> bool:
     """学习一门课程。返回是否真的进入了学习流程。"""
     title = await adapter.open_course(page, url)
@@ -124,14 +134,40 @@ async def study_course(
 
     pending = [ls for ls in lessons if not ls.finished]
     logger.info(f"共 {len(lessons)} 节，其中 {len(pending)} 节待完成。")
-    targets = pending or lessons
     if not pending:
-        logger.info("所有小节均已标记完成，将按复习模式重新过一遍。")
+        logger.info("所有小节均已标记完成，无需重复播放。")
+        return True
 
-    for index, lesson in enumerate(targets, 1):
-        logger.info(f"[{index}/{len(targets)}] {lesson.title}", shift=True)
+    active_key = await adapter.active_lesson_key(page)
+    index = next((i for i, item in enumerate(lessons) if item.key == active_key), 0)
+    if lessons[index].finished:
+        index = next((i for i, item in enumerate(lessons) if not item.finished), index)
+
+    while index < len(lessons):
+        # 每一轮重读目录，既拿到最新完成状态，也避免平台重绘后的旧节点。
+        lessons = await adapter.list_lessons(page)
+        if index >= len(lessons):
+            break
+        lesson = lessons[index]
+        if lesson.finished:
+            index += 1
+            continue
+
+        logger.info(f"[{index + 1}/{len(lessons)}] {lesson.title}", shift=True)
         reason = await study_lesson(page, adapter, lesson, clock, config, should_stop)
         print()  # 结束 progress 的原地刷新行
+        if reason == "switched":
+            lessons = await adapter.list_lessons(page)
+            active_key = await adapter.active_lesson_key(page)
+            moved_to = next((i for i, item in enumerate(lessons)
+                             if item.key == active_key), None)
+            if moved_to is not None:
+                index = moved_to
+                logger.info(
+                    f"检测到你手动切换章节，已从《{lessons[index].title}》接着处理。",
+                    shift=True,
+                )
+                continue
         if reason == "limit":
             logger.info(
                 f"已达设定时长上限 {config.limit_max_minutes} 分钟，停止本课程。", shift=True
@@ -139,8 +175,16 @@ async def study_course(
             return True
         if reason == "finished":
             logger.info(f"《{lesson.title}》完成。")
+            if config.answer_enabled and await adapter.open_chapter_test(page):
+                await solve_chapter_test_once(page, adapter, config, provider, cache)
+        elif reason == "chapter":
+            if config.answer_enabled:
+                await solve_chapter_test_once(page, adapter, config, provider, cache)
+            else:
+                logger.info("独立章节测验已跳过（AI 答题未启用）。")
         elif reason == "skipped":
             logger.info("非视频任务点，已跳过。")
+        index += 1
 
     logger.info(f"《{title}》全部小节处理完毕。", shift=True)
     return True
@@ -208,7 +252,9 @@ async def run(config: Config, should_stop=_noop_stop) -> None:
                     logger.warn("登录状态已失效，正在重新登录。", shift=True)
                     clear_cookies()
                     await ensure_login(page, context, adapter, config)
-                if await study_course(page, adapter, url, clock, config, should_stop):
+                if await study_course(
+                    page, adapter, url, clock, config, provider, cache, should_stop
+                ):
                     studied_any = True
                 logger.info(
                     f"本课程有效学习 {clock.elapsed_minutes:.1f} 分钟"

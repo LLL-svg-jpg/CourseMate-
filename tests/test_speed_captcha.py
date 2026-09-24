@@ -11,6 +11,7 @@ from __future__ import annotations
 import sys
 import tempfile
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -144,12 +145,35 @@ def test_gui_wiring() -> None:
               str(app.speed_label.cget("foreground")) in ("", "#000000"),
               str(app.speed_label.cget("foreground")))
 
-        # 关掉提醒开关后不该再动窗口
+        app.speed_input_var.set("1.25")
+        app._apply_speed_input()
+        check("倍速输入框可直接切到 1.25",
+              abs(app.speed_var.get() - 1.25) < 0.01 and app.speed_label.cget("text") == "1.25x")
+        app.speed_input_var.set("99")
+        app._apply_speed_input()
+        check("输入倍速仍受当前上限约束",
+              abs(app.speed_var.get() - SPEED_MAX_UNLOCKED) < 0.01)
+
+        class RunningWorker:
+            @staticmethod
+            def is_alive(): return True
+
+        saved = []
+        app.worker = RunningWorker()
+        app.save = lambda silent=False: saved.append(silent) or True
+        app.speed_input_var.set("1.25")
+        app._apply_speed_input()
+        check("运行中输入倍速会立即写入热配置", saved == [True], str(saved))
+
+        # 响铃和叫回窗口是两个独立开关
         app.captcha_popup_var.set(False)
-        app._call_user_over("[需要你处理] 测试")
-        check("关掉提醒后不会强行弹窗", root.state() != "zoomed" or True)
+        app.beep_var.set(True)
+        with mock.patch("winsound.MessageBeep") as beep:
+            app._call_user_over("[需要你处理] 测试")
+            check("只开响铃时仍会发声", beep.called)
 
         app.captcha_popup_var.set(True)
+        app.beep_var.set(False)
         app.on_top_var.set(False)
         app._call_user_over("[需要你处理] 测试")
         root.update()
@@ -164,6 +188,8 @@ def test_gui_wiring() -> None:
         app._drop_topmost()
         check("但用户自己开了「窗口置顶」时不会被撤掉",
               bool(root.attributes("-topmost")))
+        check("打包环境按实际导入识别 httpx",
+              bool(app._dependency_version("httpx")))
         app.on_top_var.set(False)
         root.attributes("-topmost", False)
     finally:

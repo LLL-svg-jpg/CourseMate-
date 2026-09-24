@@ -64,6 +64,15 @@ def _render(question: Question) -> str:
     return "\n".join(lines)
 
 
+def _image_parts(question: Question) -> tuple[str, str] | None:
+    """拆出 data URL，供不同服务商各自组装图片消息。"""
+    if not question.image_data_url or "," not in question.image_data_url:
+        return None
+    header, data = question.image_data_url.split(",", 1)
+    media_type = header.split(";", 1)[0].removeprefix("data:") or "image/png"
+    return media_type, data
+
+
 def _to_result(payload: dict, source: str) -> AnswerResult:
     try:
         confidence = float(payload.get("confidence", 0.0))
@@ -107,12 +116,21 @@ class AnthropicProvider(AnswerProvider):
 
     async def solve(self, question: Question) -> AnswerResult:
         a = self._anthropic
+        prompt = _render(question)
+        content: list[dict] = [{"type": "text", "text": prompt}]
+        image = _image_parts(question)
+        if image:
+            media_type, data = image
+            content.insert(0, {
+                "type": "image",
+                "source": {"type": "base64", "media_type": media_type, "data": data},
+            })
         try:
             response = await self._client.messages.create(
                 model=self.model,
                 max_tokens=16000,
                 system=SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": _render(question)}],
+                messages=[{"role": "user", "content": content}],
                 output_config={
                     "effort": self.effort,
                     "format": {"type": "json_schema", "schema": ANSWER_SCHEMA},
@@ -175,11 +193,21 @@ class OpenAICompatProvider(AnswerProvider):
         import httpx
 
         hint = "\n\n请只输出 JSON，字段为 option_keys, option_texts, text, confidence, reasoning。"
+        prompt = _render(question) + hint
+        user_content: str | list[dict] = prompt
+        if question.image_data_url:
+            user_content = [
+                {"type": "text", "text": (
+                    "请以图片里实际渲染的题目和选项为准；页面文字可能被防复制字体打乱。\n\n"
+                    + prompt
+                )},
+                {"type": "image_url", "image_url": {"url": question.image_data_url}},
+            ]
         body = {
             "model": self.model,
             "messages": [
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": _render(question) + hint},
+                {"role": "user", "content": user_content},
             ],
             "response_format": {"type": "json_object"},
             "temperature": 0.2,
