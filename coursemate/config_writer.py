@@ -27,7 +27,7 @@ executable_path = "{executable_path}"
 # 最大化打开浏览器。关掉才会用下面的 window_size
 maximize = {maximize}
 window_size = [{win_w}, {win_h}]
-# 一节都没学成时保留浏览器窗口，方便你看清是哪一步不对。
+# 有任务失败时保留浏览器窗口，方便你看清是哪一步不对。
 # 关掉它，失败时窗口会一闪而过，什么都看不到
 keep_open_on_failure = {keep_open}
 # 无头模式。建议 false —— 陪伴软件的意义就是你能看见它在干活
@@ -55,6 +55,8 @@ enabled = {answer_enabled}
 retry_until_correct = {retry_until_correct}
 # 仅在 retry_until_correct = false 时生效：是否提交那唯一一次作答
 auto_submit = {auto_submit}
+# 独立考试默认由人工交卷，与章节测验开关互不影响
+exam_auto_submit = {exam_auto_submit}
 # anthropic / deepseek / qwen / zhipu / moonshot / doubao
 # / siliconflow / baichuan / minimax / openai_compatible
 provider = "{provider}"
@@ -82,7 +84,7 @@ proxy = "{proxy}"
 on_finish = "{on_finish}"
 # 窗口置顶
 always_on_top = {always_on_top}
-# 开机自启时直接最小化，不弹到面前
+# 打开软件时直接最小化，不弹到面前
 start_minimized = {start_minimized}
 '''
 
@@ -127,6 +129,7 @@ def dump_config(data: dict[str, Any]) -> str:
         answer_enabled=_bool(data.get("answer_enabled", True)),
         retry_until_correct=_bool(data.get("retry_until_correct", True)),
         auto_submit=_bool(data.get("auto_submit", False)),
+        exam_auto_submit=_bool(data.get("exam_auto_submit", False)),
         provider=_esc(data.get("provider", "anthropic")),
         api_key=_esc(data.get("api_key", "")),
         model=_esc(data.get("model", "claude-opus-5")),

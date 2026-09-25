@@ -41,6 +41,7 @@ class ZhihuishuAdapter(PlatformAdapter):
     # DOM 结构并不一致。硬编码单个选择器必然在某些课上落空，
     # 因此这里按候选列表依次尝试，命中哪个就用哪个，并把结果记进日志便于反馈。
     LESSON_CANDIDATES = (
+        "ul.list li.video",  # 共享课当前目录
         ".clearfix.video",      # 经典学分课，Autovisor 验证
         ".video-item",          # studyvideoh5 常见
         ".catalogue-item",
@@ -55,6 +56,7 @@ class ZhihuishuAdapter(PlatformAdapter):
 
     CAPTCHA_SEL = ".yidun_modal__title"
     DIALOG_SEL = ".el-dialog"
+    POPUP_SEL = "#playTopic-dialog"
     QUESTION_TITLE_SEL = ".topic-title"
     QUESTION_LIST_SEL = ".el-scrollbar__view"
     QUESTION_NUMBER_SEL = ".number"
@@ -63,12 +65,23 @@ class ZhihuishuAdapter(PlatformAdapter):
 
     def __init__(self) -> None:
         self.is_hike = False
+        self.is_shared = False
+        self.confirm_catalog_progress = False
+        self.ui_playback = False
         # 实际命中的章节选择器，供日志与后续复用
         self.lesson_sel: str = ""
+        self._last_selector_log: tuple[str, int] | None = None
+        self._unsupported_speed: float | None = None
+        self._popup_question_count = 0
+        self._current_question_index = 0
+        self.work_page: Page | None = None
+        self.course_page_lost = False
+        self.course_url = ""
 
     @classmethod
     def match(cls, url: str) -> bool:
-        return "zhihuishu.com" in url
+        host = (urlparse(url).hostname or "").lower()
+        return host == "zhihuishu.com" or host.endswith(".zhihuishu.com")
 
     # ---------- 刷课主线 ----------
 
@@ -82,7 +95,9 @@ class ZhihuishuAdapter(PlatformAdapter):
         host = urlparse(page.url).hostname or ""
         if not host:  # about:blank 等尚未导航的状态
             return False
-        return not any(host.startswith(p) for p in self.LOGIN_HOSTS)
+        return host.endswith(".zhihuishu.com") and not any(
+            host.startswith(p) for p in self.LOGIN_HOSTS
+        )
 
     async def login(self, page: Page, context: BrowserContext, username: str, password: str) -> None:
         await page.goto(self.login_url, wait_until="domcontentloaded")
@@ -130,6 +145,15 @@ class ZhihuishuAdapter(PlatformAdapter):
 
     async def open_course(self, page: Page, url: str) -> str:
         self.is_hike = "hike.zhihuishu.com" in url
+        parsed = urlparse(url)
+        self.is_shared = (parsed.hostname or "").lower() == "studyvideoh5.zhihuishu.com" \
+            and parsed.path.lower().startswith("/stustudy")
+        self.confirm_catalog_progress = self.is_shared
+        self.ui_playback = self.is_shared
+        if self.is_shared:
+            self.QUESTION_TITLE_SEL = "#playTopic-dialog .topic-title"
+            self.QUESTION_LIST_SEL = "#playTopic-dialog .el-pager"
+            self.OPTION_SEL = "#playTopic-dialog .topic-item"
         response = await page.goto(url, wait_until="domcontentloaded", timeout=45000)
         # 播放页是 SPA，DOM 就绪不等于内容渲染完
         await page.wait_for_timeout(3500)
@@ -142,6 +166,8 @@ class ZhihuishuAdapter(PlatformAdapter):
         if not await self.is_logged_in(page):
             logger.error("打开课程页时被跳回登录页，说明登录状态未生效。")
             return "未登录"
+        if self.is_shared:
+            self.course_url = page.url
 
         title_sel = ".course-name" if self.is_hike else ".source-name"
         try:
@@ -169,19 +195,16 @@ class ZhihuishuAdapter(PlatformAdapter):
 
     async def prepare_page(self, page: Page) -> None:
         """关掉进入课程时的引导弹窗，否则会挡住播放器。"""
-        for js in (
-            'document.getElementsByClassName("iconfont iconguanbi")[0]?.click();',
-            'document.querySelector(".dialog-close")?.click();',
-        ):
+        selectors = ((".dialog-warn .talk-later-btn", ".dialog-warn .dialog-close")
+                     if self.is_shared else (".iconfont.iconguanbi", ".dialog-close"))
+        for selector in selectors:
             try:
-                await page.evaluate(js)
+                button = page.locator(selector).first
+                if await button.count() and await button.is_visible():
+                    await button.click(timeout=2000)
             except Exception:
                 pass
-        # 屏蔽页面对 video.pause 的调用，防止弹窗关闭后视频不自动恢复
-        try:
-            await page.evaluate("document.querySelector('video').pause = () => {}")
-        except Exception:
-            pass
+        # 智慧树会校验播放器行为，不覆写 video.pause/play 等原生方法。
 
     async def list_lessons(self, page: Page) -> list[Lesson]:
         sel = await self._resolve_lesson_selector(page)
@@ -192,10 +215,18 @@ class ZhihuishuAdapter(PlatformAdapter):
             )
             return []
 
+        if sel == "ul.list li.video":
+            sel = "ul.list li.video, ul.list li.chapter-test"
+            self.lesson_sel = sel
         handles = await page.query_selector_all(sel)
         lessons: list[Lesson] = []
-        for handle in handles:
-            title = " ".join((await handle.text_content() or "").split())[:60]
+        for index, handle in enumerate(handles):
+            classes = (await handle.get_attribute("class") or "").split()
+            kind = "chapter" if "chapter-test" in classes else "video"
+            title_node = await handle.query_selector("span.catalogue_title")
+            if kind == "chapter":
+                title_node = await handle.query_selector("span.name")
+            title = " ".join((await (title_node or handle).text_content() or "").split())[:60]
             finished = False
             for marker in self.FINISHED_MARKERS:
                 try:
@@ -204,8 +235,71 @@ class ZhihuishuAdapter(PlatformAdapter):
                         break
                 except Exception:
                     continue
-            lessons.append(Lesson(title=title or "未命名小节", handle=handle, finished=finished))
+            if not finished:
+                progress = await handle.query_selector(".progress-num")
+                if progress and (await progress.text_content() or "").strip() == "100%":
+                    finished = True
+            lessons.append(Lesson(title=title or "未命名小节", handle=handle,
+                                  finished=finished, key=str(index), kind=kind))
         return lessons
+
+    async def active_lesson_key(self, page: Page) -> str:
+        if not self.lesson_sel:
+            return ""
+        handles = await page.query_selector_all(self.lesson_sel)
+        markers = (self.HIKE_LESSON_ACTIVE,) if self.is_hike else self.LESSON_ACTIVE_MARKERS
+        for index, handle in enumerate(handles):
+            classes = (await handle.get_attribute("class") or "").split()
+            if any(marker in classes for marker in markers):
+                return str(index)
+        return ""
+
+    async def confirm_lesson_completion(self, page: Page, lesson: Lesson) -> bool:
+        lessons = await self.list_lessons(page)
+        return any(item.key == lesson.key and item.title == lesson.title
+                   and item.finished for item in lessons)
+
+    async def ensure_playing(self, page: Page) -> bool:
+        """仅通过播放器可见控件续播，不注入 play/pause 守卫。"""
+        if self.work_page is not None and self.work_page is not page:
+            return False
+        if await self.detect_question(page) or await self.detect_captcha(page):
+            return False
+        active_key = await self.active_lesson_key(page)
+        if not active_key:
+            return False
+        lessons = await self.list_lessons(page)
+        if any(item.key == active_key and item.finished for item in lessons):
+            return False
+        video = page.locator("video").first
+        if not await video.count() or not await video.evaluate("v => v.paused && !v.ended"):
+            return False
+        button = page.locator("#playButton .bigPlayButton, .bigPlayButton.pointer").first
+        if not await button.count() or not await button.is_visible():
+            return False
+        await button.click(timeout=3000)
+        return True
+
+    async def tune_playback(self, page: Page, speed: float, mute: bool) -> None:
+        """智慧树仅使用页面提供的倍速档；静音由浏览器启动参数处理。"""
+        video = page.locator("video").first
+        if not await video.count():
+            return
+        current = await video.evaluate("v => v.playbackRate")
+        if abs(current - speed) < 0.01:
+            return
+        option = page.locator(f'.speedList .speedTab[rate="{speed:g}"]').first
+        if not await option.count() and speed == 1:
+            option = page.locator('.speedList .speedTab[rate="1.0"]').first
+        if not await option.count():
+            if self._unsupported_speed != speed:
+                logger.warn(f"智慧树播放器没有 {speed:g}× 档位，保持网页当前倍速。")
+                self._unsupported_speed = speed
+            return
+        box = page.locator(".speedBox").first
+        if await box.count():
+            await box.hover(timeout=3000)
+        await option.click(timeout=3000)
 
     async def _resolve_lesson_selector(self, page: Page) -> str:
         """逐个试候选选择器，返回第一个真能选出元素的。
@@ -235,11 +329,21 @@ class ZhihuishuAdapter(PlatformAdapter):
                 continue
             if found:
                 self.lesson_sel = candidate
-                logger.info(f"章节列表命中选择器 {candidate}，共 {len(found)} 项。")
+                reported = (candidate, len(found))
+                if reported != self._last_selector_log:
+                    logger.info(f"章节列表命中选择器 {candidate}，共 {len(found)} 项。")
+                    self._last_selector_log = reported
                 return candidate
         return ""
 
     async def enter_lesson(self, page: Page, lesson: Lesson) -> bool:
+        if lesson.kind == "chapter":
+            before = set(page.context.pages)
+            await lesson.handle.click(timeout=10000)
+            await page.wait_for_timeout(1200)
+            opened = [tab for tab in page.context.pages if tab not in before]
+            self.work_page = opened[-1] if opened else page
+            return True
         try:
             await lesson.handle.click(timeout=10000)
         except Exception as exc:
@@ -255,6 +359,14 @@ class ZhihuishuAdapter(PlatformAdapter):
         except Exception:
             # 等不到高亮标记不代表进不去，继续用 video 是否出现来判断
             pass
+        if self.is_shared:
+            for _ in range(16):
+                if await self.active_lesson_key(page) == lesson.key:
+                    break
+                await page.wait_for_timeout(500)
+            else:
+                logger.warn(f"点击《{lesson.title}》后目录未切换到该小节，稍后按未完成补刷。")
+                return False
         await page.wait_for_timeout(1000)
         try:
             await page.wait_for_selector("video", state="attached", timeout=20000)
@@ -263,6 +375,31 @@ class ZhihuishuAdapter(PlatformAdapter):
             return False
         await self.prepare_page(page)
         return True
+
+    async def process_chapter_test(self, page: Page, provider, cache, use_cache: bool,
+                                   auto_submit: bool, should_stop) -> bool:
+        from ..zhihuishu_work import is_work_url, study_work
+
+        work_page = self.work_page or page
+        try:
+            if not is_work_url(work_page.url):
+                logger.warn("平时测试未进入可识别的智慧树作答页，本项跳过并继续课程。")
+                return False
+            processed = await study_work(work_page, provider, cache, use_cache,
+                                         auto_submit, should_stop)
+            return processed
+        finally:
+            self.work_page = None
+            if work_page is page and self.course_url and page.url != self.course_url:
+                try:
+                    await page.goto(self.course_url, wait_until="domcontentloaded", timeout=45000)
+                    await page.wait_for_selector(", ".join(self.LESSON_CANDIDATES),
+                                                 state="attached", timeout=20000)
+                    await self.prepare_page(page)
+                    logger.info("已从平时测试返回课程目录，继续处理后续小节。", shift=True)
+                except Exception as exc:
+                    self.course_page_lost = True
+                    logger.error(f"平时测试后未能返回课程目录：{Logger.summarize(exc)}")
 
     async def get_progress(self, page: Page) -> str:
         """智慧树把学习进度写在 .percent / .study-percent 上。
@@ -292,19 +429,17 @@ class ZhihuishuAdapter(PlatformAdapter):
     async def lesson_finished(self, page: Page, lesson: Lesson) -> bool:
         """当前小节是否播完。
 
-        以 class 上的 active 标记是否已移交给下一节为准（智慧树会自动切集），
-        再辅以视频播放到尾作为兜底。
+        共享课优先看目录完成标记；高亮移走可能是用户手动切课，不能当完成。
+        其他旧播放页保留原有高亮判据，视频播到末尾作兜底。
         """
-        markers = (
-            (self.HIKE_LESSON_ACTIVE,) if self.is_hike else self.LESSON_ACTIVE_MARKERS
-        )
-        try:
+        if self.is_shared and await self.confirm_lesson_completion(page, lesson):
+            return True
+        if not self.is_shared:
+            markers = ((self.HIKE_LESSON_ACTIVE,) if self.is_hike
+                       else self.LESSON_ACTIVE_MARKERS)
             cls = await lesson.handle.get_attribute("class") or ""
-            # 播放位已交给别的小节 => 本节结束
-            if cls and not any(m in cls for m in markers):
+            if cls and not any(marker in cls for marker in markers):
                 return True
-        except Exception:
-            pass
         try:
             done = await page.evaluate(
                 "(() => { const v = document.querySelector('video');"
@@ -318,7 +453,12 @@ class ZhihuishuAdapter(PlatformAdapter):
 
     async def detect_question(self, page: Page) -> bool:
         try:
-            return await page.query_selector(self.QUESTION_TITLE_SEL) is not None
+            if not self.is_shared:
+                return await page.query_selector(self.QUESTION_TITLE_SEL) is not None
+            dialog = page.locator(self.POPUP_SEL).first
+            return await dialog.count() > 0 and await dialog.is_visible() and bool(
+                await dialog.locator(".topic-title").count()
+            )
         except Exception:
             return False
 
@@ -336,22 +476,23 @@ class ZhihuishuAdapter(PlatformAdapter):
             numbers = []
 
         # 只有一道题时页面不渲染题号列表
+        self._popup_question_count = len(numbers) or 1
         if not numbers:
-            q = await self._read_current_question(page)
+            q = await self._read_current_question(page, 0)
             return [q] if q else []
 
-        for number in numbers:
+        for index, number in enumerate(numbers):
             try:
                 await number.click(timeout=3000)
                 await asyncio.sleep(0.4)
             except Exception:
                 continue
-            q = await self._read_current_question(page)
+            q = await self._read_current_question(page, index)
             if q:
                 questions.append(q)
         return questions
 
-    async def _read_current_question(self, page: Page) -> Question | None:
+    async def _read_current_question(self, page: Page, index: int) -> Question | None:
         try:
             title_node = await page.query_selector(self.QUESTION_TITLE_SEL)
             if not title_node:
@@ -372,8 +513,10 @@ class ZhihuishuAdapter(PlatformAdapter):
                     key = text[0].upper()
                     text = text[2:].strip()
                 options.append(Option(key=key, text=text))
-            qtype = self._guess_type(stem, options)
-            return Question(stem=stem, options=options, qtype=qtype)
+            type_node = await page.query_selector("#playTopic-dialog .title-tit")
+            type_text = (await type_node.text_content() or "") if type_node else ""
+            qtype = self._guess_type(type_text + stem, options)
+            return Question(stem=stem, options=options, qtype=qtype, index=index)
         except Exception as exc:
             logger.debug(f"提取题目失败：{Logger.summarize(exc)}")
             return None
@@ -397,6 +540,8 @@ class ZhihuishuAdapter(PlatformAdapter):
     ) -> bool:
         if not keys:
             return False
+        if not await self._activate_question(page, question):
+            return False
         try:
             option_nodes = await page.query_selector_all(self.OPTION_SEL)
         except Exception:
@@ -417,11 +562,26 @@ class ZhihuishuAdapter(PlatformAdapter):
                 logger.debug(f"点选选项 {key} 失败：{Logger.summarize(exc)}")
         return clicked > 0
 
+    async def _activate_question(self, page: Page, question: Question) -> bool:
+        if not self.is_shared:
+            return True
+        numbers = page.locator(self.POPUP_SEL).locator(".el-pager .number")
+        if await numbers.count():
+            if question.index < 0 or question.index >= await numbers.count():
+                return False
+            await numbers.nth(question.index).click(timeout=3000)
+            await asyncio.sleep(0.2)
+        self._current_question_index = question.index
+        title = page.locator(self.QUESTION_TITLE_SEL).first
+        return await title.count() > 0 and (await title.inner_text()).strip() == question.stem
+
     async def submit_answer(self, page: Page, auto_submit: bool) -> bool:
         if not auto_submit:
             logger.info("已填写答案但未提交（auto_submit = false），可自行确认后提交。")
             return True
-        for sel in (".submit-btn", ".btn-submit", "button.submit"):
+        prefix = "#playTopic-dialog " if self.is_shared else ""
+        for sel in (f"{prefix}.submit-btn", f"{prefix}.btn-submit",
+                    f"{prefix}button.submit"):
             try:
                 node = await page.query_selector(sel)
                 if node:
@@ -430,6 +590,9 @@ class ZhihuishuAdapter(PlatformAdapter):
                     return True
             except Exception:
                 continue
+        if self.is_shared:
+            # 经典共享课弹题点选即记录，没有独立提交钮；由关闭按钮结束。
+            return await self.detect_question(page)
         logger.warn("未找到提交按钮，答案保持已填写状态。")
         return False
 
@@ -439,6 +602,8 @@ class ZhihuishuAdapter(PlatformAdapter):
         多选题不清空会越点越多，最后变成"全选"；
         单选题多数平台点新选项会自动换掉旧的，但不保证，所以一并处理。
         """
+        if not await self._activate_question(page, question):
+            return
         try:
             nodes = await page.query_selector_all(self.OPTION_SEL)
         except Exception:
@@ -502,8 +667,17 @@ class ZhihuishuAdapter(PlatformAdapter):
 
     async def confirm_and_close(self, page: Page) -> bool:
         """答对后点确认/继续，让视频接着播。"""
-        for sel in (".confirm-btn", ".btn-confirm", ".continue-btn",
-                    ".el-button--primary", ".know-btn"):
+        if self.is_shared and self._current_question_index + 1 < self._popup_question_count:
+            next_number = page.locator(self.POPUP_SEL).locator(".el-pager .number").nth(
+                self._current_question_index + 1
+            )
+            if await next_number.count():
+                await next_number.click(timeout=2000)
+                return True
+        prefix = "#playTopic-dialog " if self.is_shared else ""
+        for sel in (f"{prefix}.confirm-btn", f"{prefix}.btn-confirm",
+                    f"{prefix}.continue-btn", f"{prefix}.el-button--primary",
+                    f"{prefix}.know-btn"):
             try:
                 node = await page.query_selector(sel)
                 if node:
@@ -519,6 +693,7 @@ class ZhihuishuAdapter(PlatformAdapter):
     async def close_question(self, page: Page) -> None:
         """关闭弹窗。Escape 是智慧树最稳的关闭方式。"""
         for attempt in (
+            lambda: page.locator("#playTopic-dialog .close-btn, #playTopic-dialog .btn").first.click(timeout=2000),
             lambda: page.press(self.DIALOG_SEL, "Escape", timeout=2000),
             lambda: page.evaluate(
                 "document.dispatchEvent(new KeyboardEvent('keydown',"

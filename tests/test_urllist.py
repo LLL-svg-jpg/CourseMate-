@@ -147,7 +147,8 @@ def test_gui_component() -> None:
         check("空地址被跳过", len(ul.get_items()) == 3, str(len(ul.get_items())))
 
         ul.set_items([{"url": "https://only.zhihuishu.com/1", "note": "唯一"}])
-        ul.remove_row(ul.rows[0])
+        check("最后一行的叉号可点击", str(ul.rows[0]["button"]["state"]) == "normal")
+        ul.rows[0]["button"].invoke()
         check("最后一行删除时清空而非移除", len(ul.rows) == 1)
         check("清空后取值为空", ul.get_items() == [])
     finally:

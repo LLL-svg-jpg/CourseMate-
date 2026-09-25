@@ -125,13 +125,14 @@ def test_lesson_finished_markers() -> None:
     from coursemate.platforms.zhihuishu import ZhihuishuAdapter
 
     adapter = ZhihuishuAdapter()
+    adapter.is_shared = True
     page = FakePage({})
 
     playing = Lesson("播放中", FakeHandle("x", "video-item current_play"))
     check("仍在播放不算完成", asyncio.run(adapter.lesson_finished(page, playing)) is False)  # type: ignore[arg-type]
 
     done = Lesson("已切走", FakeHandle("x", "video-item"))
-    check("高亮已移交即算完成", asyncio.run(adapter.lesson_finished(page, done)) is True)  # type: ignore[arg-type]
+    check("高亮已移交但目录未完成不能算完成", asyncio.run(adapter.lesson_finished(page, done)) is False)  # type: ignore[arg-type]
 
     alt = Lesson("另一种高亮", FakeHandle("x", "lesson playing"))
     check("识别其他高亮写法", asyncio.run(adapter.lesson_finished(page, alt)) is False)  # type: ignore[arg-type]

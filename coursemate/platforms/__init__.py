@@ -4,7 +4,7 @@
 新增平台时在这里加一行 import 即可。
 """
 
-from . import chaoxing, zhihuishu  # noqa: F401  仅为触发注册
+from . import chaoxing, icve, zhihuishu  # noqa: F401  仅为触发注册
 from .base import Lesson, PlatformAdapter, register, resolve, supported_platforms
 
 __all__ = [

@@ -25,11 +25,13 @@ class Lesson:
     只负责传回给适配器。
     """
 
-    def __init__(self, title: str, handle: Any, finished: bool = False, key: str = ""):
+    def __init__(self, title: str, handle: Any, finished: bool = False, key: str = "",
+                 kind: str = "video"):
         self.title = title
         self.handle = handle
         self.finished = finished
         self.key = key
+        self.kind = kind
 
     def __repr__(self) -> str:
         return f"<Lesson {self.title!r} finished={self.finished}>"
@@ -38,6 +40,7 @@ class Lesson:
 class PlatformAdapter(ABC):
     name: str = "base"
     login_url: str = ""
+    confirm_catalog_progress: bool = False
     # 视频所在的 frame。超星等平台把播放器塞在多层 iframe 里，
     # 所以所有涉及 video 的操作都要先经过 video_frame() 而不是直接用 page。
     video_in_iframe: bool = False
@@ -68,6 +71,14 @@ class PlatformAdapter(ABC):
     @abstractmethod
     async def enter_lesson(self, page: Page, lesson: Lesson) -> bool:
         """进入某章节。返回是否成功进入可播放状态。"""
+
+    async def read_document(self, page: Page, lesson: Lesson, should_stop) -> bool:
+        """逐页阅读非视频课件；默认不支持。"""
+        return False
+
+    async def confirm_lesson_completion(self, page: Page, lesson: Lesson) -> bool:
+        """平台目录是否已保存完成状态；默认信任播放器结束。"""
+        return True
 
     @abstractmethod
     async def get_progress(self, page: Page) -> str:

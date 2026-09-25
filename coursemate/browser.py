@@ -7,7 +7,7 @@ from typing import Any
 
 from playwright.async_api import BrowserContext, Page, Playwright
 
-from .config import Config, detect_browser, find_installed_browser
+from .config import Config, ConfigError, detect_browser
 from .logger import Logger
 from .stealth import STEALTH_JS, VISIBILITY_JS
 
@@ -53,20 +53,20 @@ async def launch(p: Playwright, config: Config) -> tuple[Page, BrowserContext]:
     width, height = config.window_size
     channel = config.channel
     exe_path = config.executable_path
-
-    # 配置里写着 chrome、机器上却只有 Edge，是很常见的情况。
-    # 不回退的话用户只会看到一句莫名其妙的启动失败。
-    if not exe_path and not find_installed_browser(channel):
-        fallback_channel, fallback_path = detect_browser()
-        if fallback_path:
-            logger.warn(
-                f"没有找到 {channel}，改用本机已安装的 {fallback_channel}。", shift=True)
-            channel, exe_path = fallback_channel, fallback_path
-        else:
-            logger.warn(
-                "没有找到 Chrome 或 Edge，将尝试使用 Playwright 自带内核。"
-                "若启动失败，请执行：playwright install chromium", shift=True)
-            channel = "chromium"
+    if config.executable_path_raw:
+        if not exe_path or not Path(exe_path).is_file():
+            raise ConfigError(f"浏览器安装路径无效：{config.executable_path_raw}")
+        name = Path(exe_path).name.lower()
+        detected = {"chrome.exe": "chrome", "msedge.exe": "msedge",
+                    "chromium.exe": "chromium"}.get(name)
+        if detected is None:
+            raise ConfigError("请选择 chrome.exe、msedge.exe 或 chromium.exe。")
+        if config.channel_raw == "auto":
+            channel = detected
+        elif channel != detected:
+            raise ConfigError("所选浏览器与安装路径不一致，请改选对应浏览器或选择 auto。")
+    elif config.channel_raw == "auto":
+        channel, exe_path = detect_browser()
 
     args = [
         # 关掉"Chrome 正受到自动测试软件的控制"提示条，它本身就是特征

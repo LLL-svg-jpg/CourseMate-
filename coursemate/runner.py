@@ -16,10 +16,11 @@ from playwright.async_api import BrowserContext, Page, async_playwright
 from .answer.ai import build_provider
 from .answer.base import AnswerProvider
 from .answer.cache import AnswerCache
-from .browser import launch, persist_login, clear_cookies
+from .browser import launch, persist_login
 from .config import Config
 from .diagnostics import dump_page_structure
 from .events import StudyClock
+from .exam import is_exam_url, study_exam
 from .logger import Logger
 from .platforms import resolve, supported_platforms
 from .platforms.base import Lesson, PlatformAdapter
@@ -32,6 +33,7 @@ from .workers import (
     task_monitor,
     tuning_worker,
 )
+from .zhihuishu_work import is_work_url, study_work
 
 logger = Logger()
 
@@ -48,13 +50,28 @@ def _noop_stop() -> bool:
 
 
 async def ensure_login(
-    page: Page, context: BrowserContext, adapter: PlatformAdapter, config: Config
+    page: Page, context: BrowserContext, adapter: PlatformAdapter, config: Config,
+    should_stop=_noop_stop,
 ) -> None:
     if await adapter.is_logged_in(page):
         logger.info("登录状态有效。")
         return
     logger.info("需要登录，正在处理...")
-    await adapter.login(page, context, config.username, config.password)
+    login_task = asyncio.create_task(
+        adapter.login(page, context, config.username, config.password)
+    )
+    try:
+        while True:
+            done, _ = await asyncio.wait({login_task}, timeout=0.5)
+            if should_stop():
+                raise StopRequested
+            if done:
+                await login_task
+                break
+    finally:
+        if not login_task.done():
+            login_task.cancel()
+        await asyncio.gather(login_task, return_exceptions=True)
     logger.info("登录完成。", shift=True)
     await persist_login(context)
 
@@ -66,6 +83,17 @@ async def study_lesson(
     """播完一节。也会识别用户手动切课和独立章节测验。"""
     if not await adapter.enter_lesson(page, lesson):
         return "skipped"
+    if lesson.kind == "chapter":
+        return "chapter"
+    if lesson.kind in ("ppt", "pdf"):
+        if should_stop():
+            raise StopRequested
+        if config.limit_max_minutes and clock.reached(config.limit_max_minutes):
+            return "limit"
+        finished = await adapter.read_document(page, lesson, should_stop)
+        if should_stop():
+            raise StopRequested
+        return "finished" if finished else "skipped"
     if await adapter.detect_chapter_test(page):
         return "chapter"
 
@@ -107,9 +135,10 @@ async def study_course(
     config: Config, provider: AnswerProvider | None, cache: AnswerCache,
     should_stop=_noop_stop,
 ) -> bool:
-    """学习一门课程。返回是否真的进入了学习流程。"""
+    """学习一门课程。返回是否已完成本轮任务。"""
     title = await adapter.open_course(page, url)
     logger.info(f"当前课程：《{title}》", shift=True)
+    confirm_progress = bool(getattr(adapter, "confirm_catalog_progress", False))
 
     # open_course 用这两个特殊返回值表示"根本没进对页面"，
     # 此时再去找章节只会得到一句误导性的"读不到章节列表"
@@ -121,6 +150,8 @@ async def study_course(
     await adapter.prepare_page(page)
 
     lessons = await adapter.list_lessons(page)
+    if confirm_progress:
+        lessons = await adapter.list_lessons(page)
     if not lessons:
         logger.warn("未能读取到章节列表。", shift=True)
         # 光说"读不到"没法排查，把页面真实结构导出来，问题才从猜变成看
@@ -143,11 +174,18 @@ async def study_course(
     if lessons[index].finished:
         index = next((i for i, item in enumerate(lessons) if not item.finished), index)
 
-    while index < len(lessons):
+    attempts: dict[str, int] = {}
+    while True:
         # 每一轮重读目录，既拿到最新完成状态，也避免平台重绘后的旧节点。
         lessons = await adapter.list_lessons(page)
         if index >= len(lessons):
-            break
+            if not confirm_progress:
+                break
+            index = next((i for i, item in enumerate(lessons)
+                          if item.kind in ("video", "ppt", "pdf") and not item.finished
+                          and attempts.get(item.key, 0) < 3), len(lessons))
+            if index >= len(lessons):
+                break
         lesson = lessons[index]
         if lesson.finished:
             index += 1
@@ -172,25 +210,54 @@ async def study_course(
             logger.info(
                 f"已达设定时长上限 {config.limit_max_minutes} 分钟，停止本课程。", shift=True
             )
-            return True
+            return False
+        if reason == "finished" and confirm_progress:
+            if not await adapter.confirm_lesson_completion(page, lesson):
+                reason = "unconfirmed"
+        if (confirm_progress and lesson.kind in ("video", "ppt", "pdf")
+                and reason in ("unconfirmed", "skipped", "timeout")):
+            attempts[lesson.key] = attempts.get(lesson.key, 0) + 1
+            if attempts[lesson.key] < 3:
+                logger.warn(f"《{lesson.title}》目录未显示完成，重新学习（第 {attempts[lesson.key] + 1} 次）。")
+                continue
+            logger.warn(f"《{lesson.title}》尝试 3 次后目录仍未完成，先继续后续课件。")
         if reason == "finished":
             logger.info(f"《{lesson.title}》完成。")
             if config.answer_enabled and await adapter.open_chapter_test(page):
                 await solve_chapter_test_once(page, adapter, config, provider, cache)
         elif reason == "chapter":
             if config.answer_enabled:
-                await solve_chapter_test_once(page, adapter, config, provider, cache)
+                handler = getattr(adapter, "process_chapter_test", None)
+                if handler is not None:
+                    await handler(page, provider, cache, config.answer_cache,
+                                  config.auto_submit, should_stop)
+                    if getattr(adapter, "course_page_lost", False):
+                        logger.warn("平时测试后返回课程目录失败，本地址标记未完成，不再误报全部完成。")
+                        return False
+                else:
+                    await solve_chapter_test_once(page, adapter, config, provider, cache)
             else:
                 logger.info("独立章节测验已跳过（AI 答题未启用）。")
         elif reason == "skipped":
-            logger.info("非视频任务点，已跳过。")
+            logger.info("文档课件未能完成，已跳过。" if lesson.kind in ("ppt", "pdf") else "非视频任务点，已跳过。")
         index += 1
 
-    logger.info(f"《{title}》全部小节处理完毕。", shift=True)
+    if confirm_progress:
+        remaining = [item for item in await adapter.list_lessons(page) if not item.finished]
+        if remaining:
+            logger.warn(f"《{title}》本轮结束，目录仍有 {len(remaining)} 节未达 100%，请查看日志。", shift=True)
+            for item in remaining:
+                logger.warn(f"未完成：《{item.title}》")
+            logger.info("已记录未完成课件，继续处理下一个任务地址。")
+            return False
+        else:
+            logger.info(f"《{title}》全部小节已由平台目录确认完成。", shift=True)
+    else:
+        logger.info(f"《{title}》全部小节处理完毕。", shift=True)
     return True
 
 
-async def run(config: Config, should_stop=_noop_stop) -> None:
+async def run(config: Config, should_stop=_noop_stop) -> bool:
     urls = config.course_urls
     unresolved = [u for u in urls if resolve(u) is None]
     if unresolved:
@@ -198,7 +265,7 @@ async def run(config: Config, should_stop=_noop_stop) -> None:
         logger.info(f"当前支持：{', '.join(supported_platforms())}")
         urls = [u for u in urls if resolve(u) is not None]
     if not urls:
-        return
+        return False
 
     cache = AnswerCache(enabled=config.answer_cache)
     if config.answer_cache:
@@ -209,37 +276,19 @@ async def run(config: Config, should_stop=_noop_stop) -> None:
     if provider:
         logger.info(f"AI 作答已启用：{provider.name} / {config.model}")
     elif config.answer_enabled:
-        logger.info("未启用 AI，遇题将按选项顺序逐个尝试作答。")
+        logger.info("未启用 AI：视频弹题可试错，独立测验和考试无参考答案时留空。")
     if config.retry_until_correct:
-        logger.info("答题模式：答错自动换答案重试，直到平台判定正确。")
+        logger.info("视频弹题模式：答错自动换答案重试，直到平台判定正确。")
     else:
-        logger.info("答题模式：只作答一次" + ("并提交。" if config.auto_submit else "，不提交。"))
+        logger.info("视频弹题模式：只作答一次" + ("并提交。" if config.auto_submit else "，不提交。"))
     clock = StudyClock()
     tasks: list[asyncio.Task] = []
     studied_any = False
+    completed = not unresolved
 
     async with async_playwright() as p:
         page, context = await launch(p, config)
         try:
-            first_adapter = resolve(urls[0])
-            assert first_adapter is not None
-            await ensure_login(page, context, first_adapter, config)
-
-            # 常驻协程在整个会话期间只启动一次
-            tasks = [
-                asyncio.create_task(playback_worker(page, first_adapter), name="playback"),
-                asyncio.create_task(tuning_worker(page, first_adapter, config), name="tuning"),
-                asyncio.create_task(
-                    captcha_worker(page, first_adapter, config, clock), name="captcha"
-                ),
-                asyncio.create_task(
-                    question_worker(page, first_adapter, config, clock, provider, cache),
-                    name="question",
-                ),
-            ]
-            monitor = asyncio.create_task(task_monitor(tasks), name="monitor")
-            tasks.append(monitor)
-
             for url in urls:
                 if should_stop():
                     raise StopRequested
@@ -249,35 +298,118 @@ async def run(config: Config, should_stop=_noop_stop) -> None:
                 logger.info("=" * 46, shift=True)
                 clock.reset()
                 if not await adapter.is_logged_in(page):
-                    logger.warn("登录状态已失效，正在重新登录。", shift=True)
-                    clear_cookies()
-                    await ensure_login(page, context, adapter, config)
-                if await study_course(
-                    page, adapter, url, clock, config, provider, cache, should_stop
-                ):
-                    studied_any = True
+                    logger.info(f"正在确认{adapter.name}登录状态。")
+                    await ensure_login(page, context, adapter, config, should_stop)
+                if is_work_url(url):
+                    if not config.answer_enabled:
+                        logger.warn("AI 答题未启用，智慧树测试/考试不自动处理。")
+                        completed = False
+                        continue
+                    await page.goto(url, wait_until="domcontentloaded")
+                    processed = await study_work(
+                        page, provider, cache, config.answer_cache,
+                        config.exam_auto_submit if "doexamination" in url.lower()
+                        else config.auto_submit, should_stop,
+                    )
+                    if processed:
+                        logger.info("测试/考试页面保留供你核对；点软件「停止」结束。")
+                        while not should_stop():
+                            await asyncio.sleep(0.5)
+                        raise StopRequested
+                    logger.warn("智慧树测试/考试未完成，保留页面供人工检查。")
+                    completed = False
+                    if config.keep_browser_open:
+                        while not should_stop():
+                            await asyncio.sleep(0.5)
+                        raise StopRequested
+                    continue
+                if is_exam_url(url):
+                    if not config.answer_enabled:
+                        logger.warn("AI 答题未启用，独立考试不自动处理。")
+                        completed = False
+                        continue
+                    try:
+                        exam_processed = await study_exam(
+                            page, url, provider, cache, config.answer_cache,
+                            config.exam_auto_submit, should_stop,
+                        )
+                    except Exception as exc:
+                        logger.error(f"独立考试处理未完成：{Logger.summarize(exc)}")
+                        exam_processed = False
+                    if exam_processed:
+                        logger.info("考试页面保持打开，供你核对作答与交卷状态；点软件的「停止」结束。")
+                        while not should_stop():
+                            await asyncio.sleep(0.5)
+                        raise StopRequested
+                    logger.warn("独立考试未完成，保留当前页面供人工检查。")
+                    completed = False
+                    if config.keep_browser_open:
+                        while not should_stop():
+                            await asyncio.sleep(0.5)
+                        raise StopRequested
+                    continue
+                tasks = [
+                    asyncio.create_task(playback_worker(page, adapter), name="playback"),
+                    asyncio.create_task(tuning_worker(page, adapter, config), name="tuning"),
+                    asyncio.create_task(captcha_worker(page, adapter, config, clock), name="captcha"),
+                    asyncio.create_task(
+                        question_worker(page, adapter, config, clock, provider, cache), name="question"
+                    ),
+                ]
+                tasks.append(asyncio.create_task(task_monitor(tasks), name="monitor"))
+                try:
+                    try:
+                        course_processed = await study_course(
+                            page, adapter, url, clock, config, provider, cache, should_stop
+                        )
+                    except StopRequested:
+                        raise
+                    except Exception as exc:
+                        if not getattr(adapter, "confirm_catalog_progress", False):
+                            raise
+                        logger.error(f"当前课程目录核对失败：{Logger.summarize(exc)}")
+                        course_processed = False
+                    if course_processed:
+                        studied_any = True
+                    else:
+                        completed = False
+                finally:
+                    for task in tasks:
+                        task.cancel()
+                    await asyncio.gather(*tasks, return_exceptions=True)
+                    tasks = []
                 logger.info(
                     f"本课程有效学习 {clock.elapsed_minutes:.1f} 分钟"
                     f"（另有 {clock.paused_minutes:.1f} 分钟为答题/验证等待，未计入）。"
                 )
+                if not course_processed and getattr(adapter, "confirm_catalog_progress", False):
+                    logger.warn("当前任务地址未能完整处理，已记录问题并继续下一个地址。", shift=True)
 
             logger.info("=" * 46, shift=True)
             if studied_any:
-                logger.info("全部课程处理完毕。")
+                logger.info("全部课程本轮处理结束；如有未完成课件，请查看上方提示。")
             if config.answer_cache:
                 total, hits = cache.stats()
                 logger.info(f"本地题库现有 {total} 道题，累计命中 {hits} 次。")
 
             # 一节都没学成就直接关浏览器，用户只会看到"窗口一闪就没了"，
             # 既看不到出错页面也没法手动接管。留着窗口，由用户点停止再关。
-            if not studied_any and config.keep_browser_open:
-                logger.warn("没有成功学习任何内容，浏览器先不关闭。", shift=True)
+            if not completed and config.keep_browser_open and not config.headless:
+                logger.warn("有任务未能完成，浏览器先不关闭。", shift=True)
                 logger.warn("你可以在浏览器里手动看看是哪一步不对；"
                             "看完点界面上的「停止」按钮即可关闭。")
                 while not should_stop():
                     await asyncio.sleep(1)
+            return completed and studied_any and not should_stop()
         except StopRequested:
             logger.info("已按你的要求停止。", shift=True)
+            return False
+        except Exception as exc:
+            logger.log_exception("任务未完成，浏览器保留供检查。", exc)
+            if config.keep_browser_open and not config.headless:
+                while not should_stop():
+                    await asyncio.sleep(1)
+            return False
         finally:
             for task in tasks:
                 task.cancel()
