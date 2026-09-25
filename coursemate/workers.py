@@ -138,6 +138,9 @@ async def playback_worker(page: Page, adapter: PlatformAdapter) -> None:
             completed = getattr(adapter, "video_task_completed", None)
             if completed is not None and await completed(page):
                 await stop_completed_playback(frame)
+            elif getattr(adapter, "ui_playback", False):
+                if await adapter.ensure_playing(page):
+                    logger.debug("检测到视频暂停，已通过播放器按钮恢复播放。")
             elif await ensure_playing(frame):
                 logger.debug("检测到视频暂停，已恢复播放。")
         except asyncio.CancelledError:
@@ -160,6 +163,9 @@ async def tuning_worker(page: Page, adapter: PlatformAdapter, config: Config) ->
             frame = await adapter.video_frame(page)
             speed = config.speed  # 每次读取，支持运行中改配置
             mute = config.mute
+            if getattr(adapter, "ui_playback", False):
+                await adapter.tune_playback(page, speed, mute)
+                continue
             await frame.evaluate(
                 """([speed, mute]) => {
                     const v = document.querySelector('video');
@@ -224,8 +230,7 @@ async def solve_one_question(
 ) -> bool:
     """作答一道题，必要时反复尝试直到平台判定正确。返回是否答对。
 
-    单答一次是不够的：答错的题平台会重新弹出，只答一次就关窗，
-    同一道题会无限重弹，表现出来就是"视频卡住不动"。
+    试错开关开启时仅对视频弹窗按选项重试；关闭时用参考答案填写一次。
     """
     logger.info(f"  题目：{question.describe()}")
 
@@ -233,19 +238,23 @@ async def solve_one_question(
         logger.info("  非选择题，本程序不自动填写，需要你手动处理。")
         return False
 
-    # 先拿一个起点答案：缓存优先，其次问 AI
-    result = cache.get(question) if config.answer_cache else None
-    if result is None and provider is not None:
-        result = await provider.solve(question)
-    if result is None:
-        result = AnswerResult()
+    # 只有视频弹窗能依据平台对错反馈试错；开启试错时先走选项序列，
+    # 独立测验/考试在各自流程里仍只用题库或 AI 答案。
+    result = AnswerResult()
+    if not config.retry_until_correct:
+        result = cache.get(question) if config.answer_cache else None
+        if result is None and provider is not None:
+            result = await provider.solve(question)
+        if result is None:
+            result = AnswerResult()
 
     ai_keys = match_option(result, question) if not result.empty else []
     if ai_keys:
         logger.info(f"  参考答案：{'+'.join(ai_keys)}（{result.source}，"
                     f"置信度 {result.confidence:.0%}）")
     else:
-        logger.info("  无参考答案，将按选项顺序逐个尝试。")
+        logger.info("  视频弹题按选项顺序试错。" if config.retry_until_correct
+                    else "  无参考答案，不自动填写。")
 
     if not config.retry_until_correct:
         # 旧行为：只填一次，由用户决定是否提交
@@ -259,7 +268,7 @@ async def solve_one_question(
         logger.warn("  填写答案失败。")
         return False
 
-    attempts = build_attempts(question, ai_keys)
+    attempts = build_attempts(question)
     if not attempts:
         logger.warn("  无法生成候选答案，跳过本题。")
         return False
@@ -409,8 +418,7 @@ async def question_worker(
 ) -> None:
     """答题闭环：检测弹题 → 试错作答 → 确认关闭 → 让播放继续。
 
-    这是本项目相对同类脚本的核心增量。Autovisor 在此处盲选前两个选项，
-    OCS 依赖第三方题库；这里先查缓存、再问 AI，答错还会继续试到对。
+    视频弹窗开启试错时先按选项尝试；独立测验和考试仍走 AI 答题流程。
 
     整段流程有总超时兜底：无论发生什么，最后一定会尝试关掉弹窗。
     宁可这道题没答对，也不能让视频永远停在那里。

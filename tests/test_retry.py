@@ -172,6 +172,8 @@ def run_solve(adapter, question, ai_keys, retry=True):
 
     class Provider:
         async def solve(self, q):
+            if retry:
+                raise AssertionError("视频弹窗已启用试错，不应先调用 AI")
             return AnswerResult(option_keys=list(ai_keys), confidence=0.8, source="ai")
 
     cache = FakeCache()
@@ -184,14 +186,14 @@ def test_retry_loop() -> None:
     print("\n== 试错循环 ==")
     q = make_q(4, "single")
 
-    # AI 一次答对
+    # 即使配置了 AI，视频弹窗也先按页面选项顺序试错
     a1 = FakeAdapter(correct={"C"})
     ok, cache = run_solve(a1, q, ["C"])
-    check("AI 答对时只提交一次", ok and a1.submits == 1, f"submits={a1.submits}")
+    check("视频弹窗不先调用 AI，依次试到 C", ok and a1.submits == 3, f"submits={a1.submits}")
     check("答对后调用了确认关闭", a1.confirmed)
     check("正确答案写回缓存", len(cache.stored) == 1 and cache.stored[0].source == "verified")
 
-    # AI 答错，需要逐个试
+    # 后续选项也在有限次数内继续尝试
     a2 = FakeAdapter(correct={"D"})
     ok2, _ = run_solve(a2, q, ["A"])
     check("答错后继续试直到答对", ok2, f"submits={a2.submits}")
@@ -220,7 +222,7 @@ def test_retry_loop() -> None:
     ok6, _ = run_solve(a6, q, ["A"])
     check("无法判断对错时立即停手", ok6 is False and a6.submits == 1, f"submits={a6.submits}")
 
-    # 保守模式：只填一次
+    # 关闭试错时才使用 AI，只填一次
     a7 = FakeAdapter(correct={"D"})
     ok7, _ = run_solve(a7, q, ["A"], retry=False)
     check("保守模式只提交一次", a7.submits == 1, f"submits={a7.submits}")

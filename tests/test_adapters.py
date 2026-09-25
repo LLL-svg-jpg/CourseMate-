@@ -49,15 +49,17 @@ def test_registry() -> None:
     from coursemate.platforms import resolve, supported_platforms
 
     names = supported_platforms()
-    check("已注册两个平台", len(names) == 2, f"names={names}")
+    check("已注册三个平台", len(names) == 3, f"names={names}")
     check("包含智慧树", "知道智慧树" in names)
     check("包含超星学习通", "超星学习通" in names)
+    check("包含智慧职教", "智慧职教" in names)
 
     cases = [
         ("https://studyh5.zhihuishu.com/videoStudy.html#/study", "知道智慧树"),
         ("https://hike.zhihuishu.com/course/1", "知道智慧树"),
         ("https://mooc1.chaoxing.com/mycourse/studentstudy?courseId=1", "超星学习通"),
         ("https://mooc2-ans.chaoxing.com/mooc2/x", "超星学习通"),
+        ("https://zjy2.icve.com.cn/study/coursePreview/spoccourseIndex/courseware?id=1&classId=2", "智慧职教"),
     ]
     for url, expect in cases:
         got = resolve(url)
@@ -73,6 +75,7 @@ def test_contract() -> None:
     from coursemate.platforms.base import PlatformAdapter
     from coursemate.platforms.chaoxing import ChaoxingAdapter
     from coursemate.platforms.zhihuishu import ZhihuishuAdapter
+    from coursemate.platforms.icve import IcveAdapter
 
     required = [
         "match", "is_logged_in", "login", "open_course", "list_lessons",
@@ -81,7 +84,7 @@ def test_contract() -> None:
         "submit_answer", "close_question", "detect_captcha", "captcha_cleared",
         "video_frame", "prepare_page",
     ]
-    for cls in (ZhihuishuAdapter, ChaoxingAdapter):
+    for cls in (ZhihuishuAdapter, ChaoxingAdapter, IcveAdapter):
         missing = [m for m in required if not hasattr(cls, m)]
         check(f"{cls.name} 实现全部契约方法", not missing, f"missing={missing}")
         # 抽象方法必须被真正覆盖，而不是继承基类的抽象声明

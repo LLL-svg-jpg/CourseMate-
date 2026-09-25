@@ -149,6 +149,11 @@ def test_gui_wiring() -> None:
         app._apply_speed_input()
         check("倍速输入框可直接切到 1.25",
               abs(app.speed_var.get() - 1.25) < 0.01 and app.speed_label.cget("text") == "1.25x")
+        app.speed_input_var.set("1.75")
+        root.after(650, root.quit)
+        root.mainloop()
+        check("输入后无需回车自动应用倍速",
+              abs(app.speed_var.get() - 1.75) < 0.01 and app.speed_label.cget("text") == "1.75x")
         app.speed_input_var.set("99")
         app._apply_speed_input()
         check("输入倍速仍受当前上限约束",

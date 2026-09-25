@@ -37,6 +37,8 @@ enabled = true
 retry_until_correct = true
 # 视频弹题只在 retry_until_correct = false 时使用；独立章节测验答完后也使用此开关
 auto_submit = false
+# 学习通独立考试单独控制；默认由人工交卷
+exam_auto_submit = false
 # AI 服务商：anthropic / openai_compatible
 provider = "anthropic"
 # API Key。也可改用环境变量 ANTHROPIC_API_KEY / OPENAI_API_KEY

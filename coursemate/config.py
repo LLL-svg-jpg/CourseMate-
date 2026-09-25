@@ -84,7 +84,7 @@ def resolve_browser_path(raw: str, channel: str = "chrome") -> str | None:
         return str(path)
 
     if path.is_dir():
-        names = _BROWSER_EXES.get(channel, ("chrome.exe", "msedge.exe"))
+        names = _BROWSER_EXES.get(channel, ("chrome.exe", "msedge.exe", "chromium.exe"))
         # 先在本层找，再往下找一层（Chrome 的 exe 在 Application 子目录里）
         for name in names:
             direct = path / name
@@ -161,10 +161,14 @@ class Config:
         Playwright 要的是精确到 .exe 的路径，但"填浏览器安装位置"这种理解
         太自然了，所以这里兼容：给了文件夹就在里面找浏览器主程序。
         """
-        raw = str(self._get("browser", "executable_path", "")).strip().strip('"')
+        raw = self.executable_path_raw
         if not raw:
             return None
-        return resolve_browser_path(raw, self.channel)
+        return resolve_browser_path(raw, self.channel_raw)
+
+    @property
+    def executable_path_raw(self) -> str:
+        return str(self._get("browser", "executable_path", "")).strip().strip('"')
 
     @property
     def window_size(self) -> tuple[int, int]:
@@ -185,11 +189,7 @@ class Config:
 
     @property
     def keep_browser_open(self) -> bool:
-        """一节都没学成时，是否保留浏览器窗口。
-
-        默认开启：失败时立刻关窗，用户只会看到"闪一下就没了"，
-        既看不到出错的页面，也无法手动接管。
-        """
+        """本轮有任务失败时，是否保留浏览器窗口。"""
         return bool(self._get_live("browser", "keep_open_on_failure", True))
 
     @property
@@ -263,6 +263,11 @@ class Config:
     def auto_submit(self) -> bool:
         """默认 false：只填不交。AI 正确率不做保证，交不交由使用者决定。"""
         return bool(self._get_live("answer", "auto_submit", False))
+
+    @property
+    def exam_auto_submit(self) -> bool:
+        """独立考试单独控制，绝不继承章节测验的自动提交开关。"""
+        return bool(self._get_live("answer", "exam_auto_submit", False))
 
     @property
     def retry_until_correct(self) -> bool:
@@ -346,7 +351,7 @@ class Config:
 
     @property
     def start_minimized(self) -> bool:
-        """开机自启时是否直接最小化，不弹到面前。"""
+        """打开软件时是否直接最小化，不弹到面前。"""
         return bool(self._get("runtime", "start_minimized", False))
 
     @property

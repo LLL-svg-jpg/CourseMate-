@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+import math
 import os
 import queue
 import subprocess
@@ -220,7 +221,6 @@ class UrlList(ttk.Frame):
     def _refresh(self) -> None:
         for i, record in enumerate(self.rows, 1):
             record["label"].configure(text=f"{i}.")
-            record["button"].configure(state="disabled" if len(self.rows) == 1 else "normal")
             record["handle"].configure(
                 text="⣿" if len(self.rows) > 1 else " ")
         filled = len([r for r in self.rows if r["var"].get().strip()])
@@ -579,13 +579,13 @@ class CourseMateGUI:
 
         head = ttk.Frame(tab)
         head.grid(row=0, column=0, columnspan=4, sticky="ew")
-        ttk.Label(head, text="课程播放页地址").pack(side="left")
+        ttk.Label(head, text="课程播放页／学习通考试地址").pack(side="left")
         ttk.Label(head, text="（右侧小框可写备注，方便认出是哪门课）",
                   style="Hint.TLabel").pack(side="left", padx=(6, 0))
         self.url_list = UrlList(tab)
         self.url_list.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(4, 2))
 
-        ttk.Label(tab, text="要填播放页地址，不是课程封面页。例：https://studyvideoh5.zhihuishu.com/videoStudy.html#/...",
+        ttk.Label(tab, text="刷课填播放页地址；学习通独立考试可填正在作答的考试页地址。",
                   style="Hint.TLabel").grid(row=2, column=0, columnspan=4, sticky="w", pady=(0, 8))
 
         ttk.Label(tab, text="播放倍速").grid(row=3, column=0, sticky="w")
@@ -599,6 +599,9 @@ class CourseMateGUI:
         self.speed_label = ttk.Label(speed_value, text="1.5x", width=6, font=FONT_BOLD)
         self.speed_label.pack(side="left")
         self.speed_input_var = tk.StringVar(value="1.5")
+        self._speed_input_job = None
+        self._updating_speed_input = False
+        self.speed_input_var.trace_add("write", self._queue_speed_input)
         self.speed_input = ttk.Entry(
             speed_value, textvariable=self.speed_input_var, width=5, justify="center")
         self.speed_input.pack(side="left", padx=(4, 0))
@@ -725,8 +728,14 @@ class CourseMateGUI:
             variable=self.auto_submit_var)
         self.auto_submit_check.grid(row=14, column=0, columnspan=4, sticky="w", padx=(20, 0))
 
+        self.exam_auto_submit_var = tk.BooleanVar(value=False)
+        self.exam_auto_submit_check = ttk.Checkbutton(
+            tab, text="独立考试自动交卷（仅整卷题目均已作答；默认关闭）",
+            variable=self.exam_auto_submit_var)
+        self.exam_auto_submit_check.grid(row=15, column=0, columnspan=4, sticky="w", padx=(20, 0))
+
         ttk.Label(tab, text="题库缓存、日志、开机自启等选项在「设置」页",
-                  style="Hint.TLabel").grid(row=15, column=0, columnspan=4,
+                  style="Hint.TLabel").grid(row=16, column=0, columnspan=4,
                                             sticky="w", pady=(12, 0))
 
         tab.columnconfigure(1, weight=1)
@@ -836,6 +845,7 @@ class CourseMateGUI:
 
         ttk.Label(box, text="安装路径").grid(row=1, column=0, sticky="w", pady=(8, 0))
         self.exe_path_var = tk.StringVar()
+        self.exe_path_var.trace_add("write", lambda *_: self._update_browser_hint())
         ttk.Entry(box, textvariable=self.exe_path_var).grid(
             row=1, column=1, sticky="ew", padx=(8, 8), pady=(8, 0))
         path_btns = ttk.Frame(box)
@@ -850,7 +860,7 @@ class CourseMateGUI:
         ttk.Checkbutton(box, text="出错时保留浏览器窗口（推荐）",
                         variable=self.keep_open_var).grid(
             row=3, column=0, columnspan=3, sticky="w", pady=(8, 0))
-        ttk.Label(box, text="一节都没学成时不自动关窗，方便看清是哪一步不对",
+        ttk.Label(box, text="有任务失败时不自动关窗，方便看清是哪一步不对",
                   style="Hint.TLabel").grid(row=4, column=0, columnspan=3, sticky="w")
 
         self.headless_var = tk.BooleanVar(value=False)
@@ -877,7 +887,7 @@ class CourseMateGUI:
                   style="Hint.TLabel").grid(row=3, column=0, columnspan=3, sticky="w")
 
         self.start_min_var = tk.BooleanVar(value=False)
-        ttk.Checkbutton(box, text="开机自启时直接最小化", variable=self.start_min_var).grid(
+        ttk.Checkbutton(box, text="打开软件时直接最小化", variable=self.start_min_var).grid(
             row=4, column=0, columnspan=3, sticky="w", pady=(8, 0))
 
         self.beep_var = tk.BooleanVar(value=True)
@@ -1047,17 +1057,40 @@ class CourseMateGUI:
         speed = self.speed_var.get()
         self.speed_label.configure(text=f"{speed:.2f}x")
         if hasattr(self, "speed_input_var"):
-            self.speed_input_var.set(f"{speed:g}")
+            self._updating_speed_input = True
+            try:
+                self.speed_input_var.set(f"{speed:g}")
+            finally:
+                self._updating_speed_input = False
         # 超过 2 倍就把数字标红，提醒这一档已经不保险了
         self.speed_label.configure(
             foreground="#c62828" if speed > SPEED_MAX + 0.001 else "")
 
+    def _queue_speed_input(self, *_args) -> None:
+        if self._updating_speed_input:
+            return
+        if self._speed_input_job is not None:
+            self.root.after_cancel(self._speed_input_job)
+            self._speed_input_job = None
+        raw = self.speed_input_var.get().strip().lower().rstrip("x×")
+        try:
+            if not math.isfinite(float(raw)):
+                return
+        except ValueError:
+            return  # 输入中的空串/小数点不是最终值，失焦时再提示
+        self._speed_input_job = self.root.after(500, self._apply_speed_input)
+
     def _apply_speed_input(self, _event=None) -> str | None:
         """把输入框中的数字应用到倍速滑块。"""
+        if self._speed_input_job is not None:
+            self.root.after_cancel(self._speed_input_job)
+            self._speed_input_job = None
         previous = self.speed_var.get()
         raw = self.speed_input_var.get().strip().lower().rstrip("x×")
         try:
             speed = float(raw)
+            if not math.isfinite(speed):
+                raise ValueError
         except ValueError:
             self.root.bell()
             speed = self.speed_var.get()
@@ -1087,16 +1120,27 @@ class CourseMateGUI:
 
     def _update_browser_hint(self) -> None:
         """把实际会用哪个浏览器显示出来，省得用户猜。"""
-        from .config import detect_browser, find_installed_browser
+        from .config import detect_browser, find_installed_browser, resolve_browser_path
 
         choice = self.channel_var.get()
-        if choice == "auto":
+        raw_path = self.exe_path_var.get().strip().strip('"')
+        if raw_path:
+            resolved = resolve_browser_path(raw_path, choice)
+            name = Path(resolved).name.lower() if resolved else ""
+            expected = {"chrome": "chrome.exe", "edge": "msedge.exe",
+                        "chromium": "chromium.exe"}.get(choice)
+            if resolved and Path(resolved).is_file() and (not expected or name == expected):
+                text = f"将使用 {Path(resolved).name}"
+            else:
+                text = "路径与选择不匹配或无效，启动会报错"
+        elif choice == "auto":
             channel, path = detect_browser()
-            text = f"将使用 {channel}" if path else "未检测到 Chrome/Edge"
+            text = f"将使用 {channel}" if path else "将尝试 Playwright Chromium"
         else:
             key = "msedge" if choice == "edge" else choice
             path = find_installed_browser(key)
-            text = f"已找到 {key}" if path else f"本机未检测到 {choice}，启动时会自动改用其他浏览器"
+            text = (f"将使用 {key}" if path else
+                    f"将尝试 {key}；未安装时会报错，不会改用其他浏览器")
         self.browser_hint.configure(text=text)
 
     def vendor_key(self) -> str:
@@ -1192,6 +1236,7 @@ class CourseMateGUI:
         """视频弹题试错与章节测验提交互不影响。"""
         state = "normal" if self.answer_enabled_var.get() else "disabled"
         self.auto_submit_check.configure(state=state)
+        self.exam_auto_submit_check.configure(state=state)
 
     # ---------------- 界面与网络设置 ----------------
 
@@ -1678,8 +1723,10 @@ class CourseMateGUI:
                 f'$s.WorkingDirectory = "{app_dir()}"; '
                 f'$s.Save()'
             )
-            subprocess.run(["powershell", "-NoProfile", "-Command", ps],
-                           capture_output=True, timeout=20)
+            result = subprocess.run(["powershell", "-NoProfile", "-Command", ps],
+                                    capture_output=True, timeout=20)
+            if result.returncode:
+                raise RuntimeError("创建开机自启快捷方式失败")
             if link.exists():
                 self._append_log("SYSTEM", f"已设置开机自启动：{link}")
             else:
@@ -1777,16 +1824,17 @@ class CourseMateGUI:
         "speed": 1.5, "mute": True, "limit_max_minutes": 0,
         "allow_high_speed": False, "captcha_popup": True,
         "answer_enabled": True, "retry_until_correct": True, "auto_submit": False,
+        "exam_auto_submit": False,
     }
 
-    def _restore_defaults(self) -> None:
+    def _restore_defaults(self, confirm: bool = True) -> None:
         """把各项设置恢复出厂值，但保留用户自己填的内容。
 
         课程地址、账号密码、API Key 属于用户数据而不是"设置"，
         恢复默认时把它们一并清掉是很讨厌的行为，所以一律不动。
         要连数据一起清，用旁边的「清空全部配置」。
         """
-        if not messagebox.askokcancel(
+        if confirm and not messagebox.askokcancel(
                 "恢复默认设置",
                 "会把字号、浏览器、答题、日志、网络等各项开关恢复到出厂值。\n\n"
                 "你的课程地址、账号密码、API Key 都会保留。\n\n"
@@ -1825,6 +1873,7 @@ class CourseMateGUI:
         self.answer_enabled_var.set(d["answer_enabled"])
         self.retry_var.set(d["retry_until_correct"])
         self.auto_submit_var.set(d["auto_submit"])
+        self.exam_auto_submit_var.set(d["exam_auto_submit"])
         self._toggle_answer_fields()
 
         # 开机自启是系统层面的，单独处理：只在当前确实开着时才去掉
@@ -1832,9 +1881,10 @@ class CourseMateGUI:
             self.autostart_var.set(False)
             self._apply_autostart()
 
-        self._append_log("SYSTEM", "各项设置已恢复默认（课程地址与账号未改动）。")
-        messagebox.showinfo("已恢复", "各项设置已恢复默认值。\n点「保存配置」后生效。",
-                            parent=self.root)
+        if confirm:
+            self._append_log("SYSTEM", "各项设置已恢复默认（课程地址与账号未改动）。")
+            messagebox.showinfo("已恢复", "各项设置已恢复默认值。\n点「保存配置」后生效。",
+                                parent=self.root)
 
     def _reset_config(self) -> None:
         if not messagebox.askokcancel(
@@ -1847,7 +1897,15 @@ class CourseMateGUI:
         except OSError as exc:
             messagebox.showerror("重置失败", str(exc), parent=self.root)
             return
-        messagebox.showinfo("已清空", "配置已删除，请重新打开软件。", parent=self.root)
+        self._restore_defaults(confirm=False)
+        self.url_list.set_items([])
+        self.username_var.set("")
+        self.password_var.set("")
+        self.api_key_var.set("")
+        self.provider_var.set(providers.get("anthropic").label)
+        self.model_var.set("")
+        self.base_url_var.set("")
+        messagebox.showinfo("已清空", "配置已删除，界面中的课程和凭据也已清空。", parent=self.root)
         self._append_log("SYSTEM", "配置文件已删除。")
 
     @staticmethod
@@ -1909,7 +1967,7 @@ class CourseMateGUI:
 
     def _pick_browser(self) -> None:
         path = filedialog.askopenfilename(
-            title="选择 chrome.exe 或 msedge.exe",
+            title="选择 chrome.exe、msedge.exe 或 chromium.exe",
             filetypes=[("浏览器主程序", "*.exe"), ("所有文件", "*.*")],
             parent=self.root,
         )
@@ -1930,7 +1988,7 @@ class CourseMateGUI:
             self.exe_path_var.set(path)
             messagebox.showwarning(
                 "没找到浏览器主程序",
-                f"在这个文件夹里没找到 chrome.exe / msedge.exe：\n{path}\n\n"
+                f"在这个文件夹里没找到所选浏览器的主程序：\n{path}\n\n"
                 "路径已填入，但启动时可能失败。\n"
                 "建议改用「选文件」直接指定 chrome.exe，"
                 "或者干脆清空让程序自动查找。",
@@ -1964,6 +2022,7 @@ class CourseMateGUI:
             "answer_enabled": self.answer_enabled_var.get(),
             "retry_until_correct": self.retry_var.get(),
             "auto_submit": self.auto_submit_var.get(),
+            "exam_auto_submit": self.exam_auto_submit_var.get(),
             "provider": self.vendor_key(),
             "api_key": self.api_key_var.get().strip(),
             "model": self.model_var.get().strip(),
@@ -1995,7 +2054,7 @@ class CourseMateGUI:
         self.username_var.set(cfg.username)
         self.password_var.set(cfg.password)
         self.channel_var.set(cfg.channel_raw)
-        self.exe_path_var.set(cfg.executable_path or "")
+        self.exe_path_var.set(cfg.executable_path_raw)
         self.keep_open_var.set(cfg.keep_browser_open)
         self.headless_var.set(cfg.headless)
         self.url_list.set_items(cfg.course_items)
@@ -2009,6 +2068,7 @@ class CourseMateGUI:
         self.answer_enabled_var.set(cfg.answer_enabled)
         self.retry_var.set(cfg.retry_until_correct)
         self.auto_submit_var.set(cfg.auto_submit)
+        self.exam_auto_submit_var.set(cfg.exam_auto_submit)
         prov = providers.get(cfg.answer_provider)
         self.provider_var.set(prov.label)
         self.model_box.configure(values=prov.models)
@@ -2037,9 +2097,6 @@ class CourseMateGUI:
 
     def save(self, silent: bool = False) -> bool:
         data = self._collect()
-        if not data["urls"]:
-            messagebox.showerror("缺少课程地址", "请至少填写一个课程播放页地址。", parent=self.root)
-            return False
         try:
             save_config(CONFIG_PATH, data)
         except OSError as exc:
@@ -2062,6 +2119,9 @@ class CourseMateGUI:
 
     def start(self) -> None:
         if self.worker and self.worker.is_alive():
+            return
+        if not self.url_list.get_urls():
+            messagebox.showerror("缺少任务地址", "请至少填写一个课程播放页或考试页地址。", parent=self.root)
             return
         if not self.save(silent=True):
             return
@@ -2148,10 +2208,11 @@ class CourseMateGUI:
         """工作线程：跑 asyncio 事件循环。绝不直接碰任何 tkinter 控件。"""
         import asyncio
 
+        completed = False
         try:
             from .runner import run
 
-            asyncio.run(run(config, should_stop=self.stop_event.is_set))
+            completed = asyncio.run(run(config, should_stop=self.stop_event.is_set))
         except Exception as exc:
             self.logger.log_exception("刷课过程出现未处理异常。", exc)
         finally:
@@ -2160,7 +2221,7 @@ class CourseMateGUI:
             self.root.after(0, lambda: self._set_running(False))
             self.root.after(0, lambda: self._append_log("SYSTEM", "运行结束。"))
             # 用户主动停止时不该触发关机之类的收尾动作
-            if not self.stop_event.is_set():
+            if completed and not self.stop_event.is_set():
                 self.root.after(500, self._run_finish_action)
 
     def stop(self) -> None:

@@ -5,6 +5,10 @@ title CourseMate 刷课助手
 
 rem 优先用打包好的 exe。用 pythonw 跑 .pyw 也能用，但那样任务管理器里
 rem 显示的是 Python 和 Python 的图标，看不出是哪个软件。
+if exist "dist\CourseMate-v0.2.4\CourseMate.exe" (
+    start "" "dist\CourseMate-v0.2.4\CourseMate.exe"
+    exit /b 0
+)
 if exist "dist\CourseMate\CourseMate.exe" (
     start "" "dist\CourseMate\CourseMate.exe"
     exit /b 0
