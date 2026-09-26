@@ -158,6 +158,20 @@ def test_save_settings_without_course() -> None:
         assert config.channel_raw == "edge" and not config.maximize
 
 
+def test_exit_saves_current_settings() -> None:
+    app = object.__new__(CourseMateGUI)
+    saves, logs = [], []
+    app.save = lambda silent=False: saves.append(silent) or True
+    app._append_log = lambda *args: logs.append(args)
+    assert app._save_before_leaving()
+    assert saves == [True]
+    assert logs == []
+
+    app.save = lambda silent=False: saves.append(silent) or False
+    assert not app._save_before_leaving()
+    assert logs and logs[-1][0] == "ERROR"
+
+
 def test_real_browser_maximize() -> None:
     from playwright.async_api import async_playwright
     from coursemate.config import find_installed_browser
@@ -186,5 +200,6 @@ if __name__ == "__main__":
     test_other_settings_roundtrip()
     test_finish_action_only_after_success()
     test_save_settings_without_course()
+    test_exit_saves_current_settings()
     test_real_browser_maximize()
     print("设置链路测试通过")

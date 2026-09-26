@@ -31,10 +31,14 @@ PDF_HTML = """<meta charset="utf-8"><main><div id="viewer">PDF 预览</div>
 <div><button id="previous" onclick="step(-1)">上一页</button>
 <span id="pdf-count">3 / 4</span>
 <button id="next" onclick="step(1)">下一页</button></div></main>
+<div id="resume" class="el-message-box">上次观看到第2页，是否继续观看？
+<button class="el-button--primary" onclick="document.body.dataset.resume='1';
+  document.querySelector('#resume').style.display='none'">确定</button></div>
 <script>
 let current = 3;
 window.visited = [3];
 function step(delta) {
+  if (!document.body.dataset.resume) return;
   current = Math.max(1, Math.min(4, current + delta));
   document.querySelector('#pdf-count').textContent = `${current} / 4`;
   window.visited.push(current);
@@ -56,6 +60,7 @@ async def run() -> None:
         await page.set_content(PDF_HTML)
         pdf = Lesson("2-7等保实施流程-监督检查.pdf", "pdf", key="pdf", kind="pdf")
         assert await adapter.read_document(page, pdf, lambda: False)
+        assert await page.locator("body").get_attribute("data-resume") == "1"
         assert await page.evaluate("window.visited") == [3, 2, 1, 2, 3, 4]
 
         await page.goto("about:blank")

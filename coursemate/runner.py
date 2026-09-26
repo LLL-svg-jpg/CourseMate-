@@ -60,6 +60,7 @@ async def ensure_login(
     login_task = asyncio.create_task(
         adapter.login(page, context, config.username, config.password)
     )
+    captcha_notified = False
     try:
         while True:
             done, _ = await asyncio.wait({login_task}, timeout=0.5)
@@ -68,6 +69,16 @@ async def ensure_login(
             if done:
                 await login_task
                 break
+            if not captcha_notified:
+                try:
+                    if await adapter.detect_captcha(page):
+                        logger.warn(
+                            f"[需要你处理] {adapter.name}登录页出现安全验证，请在浏览器手动完成。",
+                            shift=True,
+                        )
+                        captcha_notified = True
+                except Exception:
+                    pass
     finally:
         if not login_task.done():
             login_task.cancel()
@@ -296,10 +307,11 @@ async def run(config: Config, should_stop=_noop_stop) -> bool:
                 if adapter is None:
                     continue
                 logger.info("=" * 46, shift=True)
-                clock.reset()
                 if not await adapter.is_logged_in(page):
                     logger.info(f"正在确认{adapter.name}登录状态。")
                     await ensure_login(page, context, adapter, config, should_stop)
+                # 账号填充、协议勾选及可能出现的人工安全验证完成后再开始计时。
+                clock.reset()
                 if is_work_url(url):
                     if not config.answer_enabled:
                         logger.warn("AI 答题未启用，智慧树测试/考试不自动处理。")

@@ -1,8 +1,8 @@
 """把 CourseMate 打包成带图标的 exe。
 
 用法：
-    python build.py            # 目录模式（默认）
-    python build.py --onefile  # 单文件 exe（不推荐，见下）
+    python build.py --distpath dist\\CourseMate-vX.Y.Z --workpath build\\CourseMate-vX.Y.Z
+    python build.py --onefile --distpath dist\\CourseMate-vX.Y.Z --workpath build\\CourseMate-vX.Y.Z
 
 默认用目录模式而不是单文件，是实测的结果：单文件版在本机
 --windowed 下 bootloader 会卡住，进程活着但界面永远不出来，
@@ -19,6 +19,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import sys
+import argparse
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -116,21 +117,56 @@ def check_prerequisites() -> list[str]:
     return problems
 
 
-def build(onefile: bool = True) -> int:
-    for path in (DIST, BUILD):
-        if path.exists():
-            shutil.rmtree(path, ignore_errors=True)
+def _output_subdir(path: Path, parent: Path, option: str) -> Path:
+    """只允许使用 dist/build 下的专属子目录，拒绝根目录和任意外部路径。"""
+    path = path.resolve()
+    parent = parent.resolve()
+    try:
+        path.relative_to(parent)
+    except ValueError as exc:
+        raise ValueError(f"{option} 必须位于 {parent} 下：{path}") from exc
+    if path == parent:
+        raise ValueError(f"{option} 不能直接是 {parent}，请指定本次版本的子目录。")
+    return path
+
+
+def _new_output_dir(path: Path, option: str) -> Path:
+    """创建一次性输出目录，绝不清理已有目录或其中的用户数据。"""
+    if path.exists():
+        raise FileExistsError(
+            f"{option} 已存在：{path}。为保护已有版本和配置，请指定新的版本目录。"
+        )
+    path.mkdir(parents=True, exist_ok=False)
+    return path
+
+
+def build(
+    onefile: bool,
+    dist_path: Path,
+    work_path: Path,
+    update_shortcut: bool = False,
+) -> int:
+    """打包到指定目录。
+
+    输出目录必须是 dist/build 下的新子目录，避免清理已发布版本及其用户配置。
+    """
+    dist_path = _output_subdir(dist_path, DIST, "--distpath")
+    work_path = _output_subdir(work_path, BUILD, "--workpath")
+    _new_output_dir(dist_path, "--distpath")
+    _new_output_dir(work_path, "--workpath")
 
     cmd = [
         sys.executable, "-m", "PyInstaller",
         "--name", APP_NAME,
         "--noconfirm",
         "--clean",
+        "--distpath", str(dist_path),
+        "--workpath", str(work_path),
+        "--specpath", str(work_path),
         # 图标嵌进 exe，资源管理器里才会显示成自己的图标
         "--icon", str(ICON),
         # 版本信息资源：任务管理器的「名称」列就是读这里的 FileDescription。
-        # 不能放 build/ 下——上面刚把那个目录整个删了
-        "--version-file", str(write_version_file(ROOT / "version_info.txt")),
+        "--version-file", str(write_version_file(work_path / "version_info.txt")),
         # GUI 程序：不要弹出黑色控制台窗口
         "--windowed",
         "--onefile" if onefile else "--onedir",
@@ -151,7 +187,21 @@ def build(onefile: bool = True) -> int:
         return result.returncode
 
     # 把用户需要的附属文件放到 exe 旁边
-    target = DIST if onefile else DIST / APP_NAME
+    target = dist_path if onefile else dist_path / APP_NAME
+    if not target.is_dir():
+        print(f"\n打包命令成功了，但没找到产物目录：{target}")
+        return 1
+    if not onefile:
+        missing_assets = [
+            target / "_internal" / "assets" / name
+            for name in ("app.ico", "app_64.png", "app.png")
+            if not (target / "_internal" / "assets" / name).is_file()
+        ]
+        if missing_assets:
+            print("\n打包不完整：缺少窗口/任务栏图标资源，已停止，不可发布：")
+            for path in missing_assets:
+                print(f"  · {path}")
+            return 1
     for name in ("config.example.toml", "README.md"):
         src = ROOT / name
         if src.exists():
@@ -173,7 +223,10 @@ def build(onefile: bool = True) -> int:
     exe = target / f"{APP_NAME}.exe"
     if exe.exists():
         size = exe.stat().st_size / 1024 / 1024
-        point_shortcut_at_exe(exe)
+        if update_shortcut:
+            point_shortcut_at_exe(exe)
+        else:
+            print("未改动根目录快捷方式，避免覆盖已有安装版本的指向。")
         print(f"\n打包完成：{exe}")
         print(f"体积：{size:.1f} MB")
         print(f"\n把 {target} 里的内容整个拷走就能在别的电脑上用"
@@ -216,13 +269,26 @@ $lnk.Save()
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description="打包 CourseMate")
+    parser.add_argument("--onefile", action="store_true", help="打包为单个 exe（不推荐）")
+    parser.add_argument("--distpath", type=Path, required=True,
+                        help="产物目录；必须是新的版本子目录")
+    parser.add_argument("--workpath", type=Path, required=True,
+                        help="PyInstaller 工作目录；必须是新的版本子目录")
+    parser.add_argument("--update-shortcut", action="store_true",
+                        help="将根目录快捷方式改指向本次 exe")
+    args = parser.parse_args()
     problems = check_prerequisites()
     if problems:
         print("无法打包：\n")
         for p in problems:
             print(f"  · {p}")
         return 1
-    return build(onefile="--onefile" in sys.argv)
+    try:
+        return build(args.onefile, args.distpath, args.workpath, args.update_shortcut)
+    except (ValueError, FileExistsError) as exc:
+        print(f"无法安全打包：{exc}")
+        return 2
 
 
 if __name__ == "__main__":

@@ -95,13 +95,23 @@ async def run() -> None:
         adapter._read_catalog = AsyncMock(side_effect=[full[:1], full])
         restored = await adapter.list_lessons(page)
         assert [x.key for x in restored] == ["one", "two"]
-        adapter._read_catalog = AsyncMock(side_effect=[full[:1], full[:1]])
+        adapter._read_catalog = AsyncMock(side_effect=[full[:1], full[:1], full[:1]])
         try:
             await adapter.list_lessons(page)
         except RuntimeError as exc:
             assert "少了 1 节" in str(exc)
         else:
             raise AssertionError("目录缩水两次后不应被当成完整课程")
+
+        # 已由平台目录明确标成 100% 的课件，即使下一次目录延迟没有返回，也
+        # 不能因此阻断其余课件；未完成课件仍沿用上面的严格保护。
+        completed = [dict(item) for item in full]
+        completed[0]["speed"] = 100
+        tolerant = IcveAdapter()
+        tolerant._read_catalog = AsyncMock(return_value=completed)
+        assert [x.key for x in await tolerant.list_lessons(page)] == ["one", "two"]
+        tolerant._read_catalog = AsyncMock(return_value=completed[1:])
+        assert [x.key for x in await tolerant.list_lessons(page)] == ["two"]
         await browser.close()
 
 

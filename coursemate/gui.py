@@ -60,6 +60,10 @@ COLORS = {
     "SYSTEM": "#1565c0",
 }
 
+# Vista 主题会把获得焦点的只读下拉框画成蓝底白字；这和真正可编辑的输入框
+# 不同，选完浏览器/服务商后不该还像在编辑。可编辑的模型框不使用这个样式。
+READONLY_COMBO_STYLE = "CourseMate.Readonly.TCombobox"
+
 
 
 # 关于滚动残影：真正的成因在 Win32 层，不在 tkinter 里。
@@ -434,6 +438,21 @@ class CourseMateGUI:
         style.configure("Card.TFrame", relief="solid", borderwidth=1)
         style.configure("CardTitle.TLabel", font=FONT_BOLD)
         style.configure("Arrow.TLabel", font=(family_arrow, size_arrow), foreground="#000000")
+        style.configure(
+            READONLY_COMBO_STYLE,
+            font=FONT,
+            foreground="#000000",
+            selectforeground="#000000",
+            selectbackground="#ffffff",
+            fieldbackground="#ffffff",
+        )
+        style.map(
+            READONLY_COMBO_STYLE,
+            foreground=[("readonly focus", "#000000"), ("readonly", "#000000")],
+            selectforeground=[("readonly focus", "#000000"), ("readonly", "#000000")],
+            selectbackground=[("readonly focus", "#ffffff"), ("readonly", "#ffffff")],
+            fieldbackground=[("readonly focus", "#ffffff"), ("readonly", "#ffffff")],
+        )
         # 设置页左侧分类栏。选中项加粗、变蓝、垫浅蓝底，再配左边一条竖杠
         style.configure("NavItem.TLabel", font=FONT, foreground="#333")
         style.configure("NavItemOn.TLabel", font=FONT_BOLD, foreground="#0b5cad",
@@ -530,14 +549,6 @@ class CourseMateGUI:
                 self.root.iconphoto(True, self._icon_image)
         except Exception:
             pass
-        # 让 Windows 任务栏把窗口归到自己的图标下，而不是并进 python.exe
-        try:
-            from ctypes import windll
-
-            windll.shell32.SetCurrentProcessExplicitAppUserModelID("CourseMate.App")
-        except Exception:
-            pass
-
     def _build_ui(self) -> None:
         header = ttk.Frame(self.root, padding=(14, 10, 14, 4))
         header.pack(fill="x")
@@ -1290,6 +1301,7 @@ class CourseMateGUI:
         style.configure("NavItem.TLabel", font=(family, size), foreground="#333")
         style.configure("NavItemOn.TLabel", font=(family, size, "bold"),
                         foreground="#0b5cad", background="#e5eefa")
+        style.configure(READONLY_COMBO_STYLE, font=(family, size))
         try:
             self.log_text.configure(font=("Consolas", max(9, size - 1)))
         except Exception:
@@ -1527,8 +1539,10 @@ class CourseMateGUI:
         """
         for child in widget.winfo_children():
             if isinstance(child, ttk.Combobox):
+                if child.instate(("readonly",)):
+                    child.configure(style=READONLY_COMBO_STYLE)
                 child.bind("<<ComboboxSelected>>",
-                           lambda e: e.widget.selection_clear(), add="+")
+                           lambda e: e.widget.after_idle(e.widget.selection_clear), add="+")
             self._tidy_comboboxes(child)
 
     def _update_minsize(self) -> None:
@@ -2415,6 +2429,8 @@ class CourseMateGUI:
         self._hide_to_tray()
 
     def _hide_to_tray(self) -> None:
+        if not self._save_before_leaving():
+            return
         self._save_geometry()       # 先存，withdraw 之后就取不到真实尺寸了
         try:
             self.root.withdraw()
@@ -2432,6 +2448,13 @@ class CourseMateGUI:
             except Exception:
                 pass
 
+    def _save_before_leaving(self) -> bool:
+        """收进托盘或真正退出前保存当前界面，避免地址回退到旧配置。"""
+        if self.save(silent=True):
+            return True
+        self._append_log("ERROR", "配置未保存，已取消退出或收进托盘。")
+        return False
+
     def quit_app(self) -> None:
         """真正退出。托盘菜单的「退出」走这条。"""
         if getattr(self, "_closing", False):
@@ -2443,6 +2466,8 @@ class CourseMateGUI:
                 parent=self.root,
             ):
                 return
+        if not self._save_before_leaving():
+            return
         self._closing = True
         self._save_geometry()
         self._stop_tray()
@@ -2491,6 +2516,13 @@ class CourseMateGUI:
 
 
 def main() -> int:
+    # Windows 必须在创建顶层窗口前指定应用 ID；否则任务栏可能继续沿用 Tk/Python 的默认图标。
+    try:
+        from ctypes import windll
+
+        windll.shell32.SetCurrentProcessExplicitAppUserModelID("CourseMate.App")
+    except Exception:
+        pass
     root = tk.Tk()
     try:
         # 高 DPI 屏幕下不做这一步，界面会糊

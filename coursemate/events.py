@@ -37,21 +37,43 @@ class StudyClock:
     def __init__(self) -> None:
         self._start = time.time()
         self._paused = 0.0
+        self._pause_started: float | None = None
 
     def reset(self) -> None:
         self._start = time.time()
         self._paused = 0.0
+        self._pause_started = None
 
     def add_paused(self, seconds: float) -> None:
         self._paused += max(0.0, seconds)
 
+    def pause(self) -> None:
+        """立即开始排除一段人工处理时间。"""
+        if self._pause_started is None:
+            self._pause_started = time.time()
+
+    def resume(self) -> float:
+        """结束当前人工处理，返回本次实际排除的秒数。"""
+        if self._pause_started is None:
+            return 0.0
+        seconds = max(0.0, time.time() - self._pause_started)
+        self._paused += seconds
+        self._pause_started = None
+        return seconds
+
+    @property
+    def _active_paused(self) -> float:
+        if self._pause_started is None:
+            return 0.0
+        return max(0.0, time.time() - self._pause_started)
+
     @property
     def elapsed_minutes(self) -> float:
-        return max(0.0, time.time() - self._start - self._paused) / 60
+        return max(0.0, time.time() - self._start - self._paused - self._active_paused) / 60
 
     @property
     def paused_minutes(self) -> float:
-        return self._paused / 60
+        return (self._paused + self._active_paused) / 60
 
     def reached(self, limit_minutes: float) -> bool:
         """limit_minutes <= 0 表示不限时。"""

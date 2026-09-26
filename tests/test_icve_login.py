@@ -51,4 +51,4 @@ async def run() -> None:
 
 if __name__ == "__main__":
     asyncio.run(run())
-    print("智慧职教登录：账号页、协议、提交、下次绑定及新版主页识别通过")
+    print("智慧职教登录：账号页、自动协议、提交、下次绑定及新版主页识别通过")

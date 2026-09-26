@@ -129,6 +129,17 @@ def test_clock() -> None:
     check("负数暂停被忽略", abs(clock.paused_minutes - 10) < 0.1)
 
     clock.reset()
+    clock._start -= 600
+    clock.pause()
+    assert clock._pause_started is not None
+    clock._pause_started -= 600
+    check("进行中的人工处理同样不计入学习时长", not clock.reached(5),
+          f"elapsed={clock.elapsed_minutes:.2f}")
+    waited = clock.resume()
+    check("人工处理结束后累计暂停时长", waited >= 599 and clock.paused_minutes >= 9.9,
+          f"waited={waited:.2f}, paused={clock.paused_minutes:.2f}")
+
+    clock.reset()
     check("reset 清零", clock.paused_minutes == 0 and clock.elapsed_minutes < 0.1)
 
 
