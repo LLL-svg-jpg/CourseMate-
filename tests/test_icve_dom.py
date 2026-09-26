@@ -92,26 +92,50 @@ async def run() -> None:
 
         full = [dict(id=key, name=key, type="video", speed=0, path=[0, 0, i])
                 for i, key in enumerate(("one", "two"))]
+        stable = IcveAdapter()
+        stable._catalog_items = AsyncMock(side_effect=[full[:1], full[:1], full, full])
+        settled = await stable._wait_catalog_stable(page, {"two"})
+        assert [item["id"] for item in settled] == ["one", "two"]
+        assert stable._catalog_items.await_count == 4
+
+        # 首次读取没有历史 ID 可作参照，Vue 先给半份目录时必须持续观察，
+        # 不能在前两次相同就把课程误认为只有 one。
+        first_catalog = IcveAdapter()
+        first_catalog._catalog_items = AsyncMock(
+            side_effect=[full[:1], full[:1]] + [full] * 22
+        )
+        settled = await first_catalog._wait_catalog_stable(page, observe_all=True)
+        assert [item["id"] for item in settled] == ["one", "two"]
+        assert first_catalog._catalog_items.await_count == 24
+
         adapter._read_catalog = AsyncMock(side_effect=[full[:1], full])
+        adapter._refresh_catalog = AsyncMock()
         restored = await adapter.list_lessons(page)
         assert [x.key for x in restored] == ["one", "two"]
+        assert adapter._refresh_catalog.await_count == 1
         adapter._read_catalog = AsyncMock(side_effect=[full[:1], full[:1], full[:1]])
+        adapter._refresh_catalog = AsyncMock()
+        known_paths = dict(adapter._paths)
         try:
             await adapter.list_lessons(page)
         except RuntimeError as exc:
             assert "少了 1 节" in str(exc)
         else:
             raise AssertionError("目录缩水两次后不应被当成完整课程")
+        assert adapter._refresh_catalog.await_count == 2
+        assert adapter._paths == known_paths
 
         # 已由平台目录明确标成 100% 的课件，即使下一次目录延迟没有返回，也
         # 不能因此阻断其余课件；未完成课件仍沿用上面的严格保护。
         completed = [dict(item) for item in full]
         completed[0]["speed"] = 100
         tolerant = IcveAdapter()
+        tolerant._refresh_catalog = AsyncMock()
         tolerant._read_catalog = AsyncMock(return_value=completed)
         assert [x.key for x in await tolerant.list_lessons(page)] == ["one", "two"]
         tolerant._read_catalog = AsyncMock(return_value=completed[1:])
         assert [x.key for x in await tolerant.list_lessons(page)] == ["two"]
+        assert tolerant._refresh_catalog.await_count == 0
         await browser.close()
 
 

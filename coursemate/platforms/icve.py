@@ -120,25 +120,7 @@ class IcveAdapter(PlatformAdapter):
             await page.goto(self.index_url, wait_until="domcontentloaded")
         await page.wait_for_selector(".listItem", timeout=20000)
 
-    async def _read_catalog(self, page: Page) -> list[dict]:
-        await self._open_index(page)
-        roots = page.locator(".listItem")
-        for i in range(await roots.count()):
-            root = roots.nth(i)
-            groups = root.locator(".iChild")
-            if not await groups.count() or not await groups.first.is_visible():
-                await root.locator(":scope > .items > .ts").click()
-            await root.locator(".iChild").first.wait_for(timeout=10000)
-        await page.wait_for_load_state("networkidle", timeout=20000)
-        for i in range(await roots.count()):
-            root = roots.nth(i)
-            children = root.locator(".iChild")
-            for j in range(await children.count()):
-                child = children.nth(j)
-                files = child.locator("..").locator(":scope > .fList .fwi")
-                if not await files.count() or not await files.first.is_visible():
-                    await child.locator(".ts").click()
-                    await page.wait_for_load_state("networkidle", timeout=20000)
+    async def _catalog_items(self, page: Page) -> list[dict]:
         return await page.evaluate("""() => {
             const root = document.querySelector('.listItem');
             const list = root?.parentElement?.parentElement?.parentElement?.__vue__?.list || [];
@@ -149,10 +131,79 @@ class IcveAdapter(PlatformAdapter):
                 }))));
         }""")
 
+    async def _expand_catalog(self, page: Page, focus_paths=()) -> None:
+        """展开目录；缺项重试时优先展开其上次所在的章节。"""
+        focus = {(path[0], path[1]) for path in focus_paths if len(path) >= 2}
+        roots = page.locator(".listItem")
+        for i in range(await roots.count()):
+            root = roots.nth(i)
+            groups = root.locator(".iChild")
+            if not await groups.count() or not await groups.first.is_visible():
+                await root.locator(":scope > .items > .ts").click(timeout=5000)
+            await root.locator(".iChild").first.wait_for(timeout=10000)
+
+        ordered: list[tuple[int, int]] = []
+        for i in range(await roots.count()):
+            children = roots.nth(i).locator(".iChild")
+            for j in range(await children.count()):
+                if (i, j) in focus:
+                    ordered.append((i, j))
+        for i in range(await roots.count()):
+            children = roots.nth(i).locator(".iChild")
+            for j in range(await children.count()):
+                if (i, j) not in focus:
+                    ordered.append((i, j))
+
+        for i, j in ordered:
+            child = roots.nth(i).locator(".iChild").nth(j)
+            files = child.locator("..").locator(":scope > .fList .fwi")
+            if not await files.count() or not await files.first.is_visible():
+                await child.locator(".ts").click(timeout=5000)
+                await asyncio.sleep(0.3)
+
+    async def _wait_catalog_stable(
+        self, page: Page, expected_keys=(), observe_all: bool = False
+    ) -> list[dict]:
+        """SPA 的 networkidle 不代表 Vue 目录已刷新，稳定后才采纳。"""
+        expected = set(expected_keys)
+        previous = None
+        last: list[dict] = []
+        # 第一次没有历史课件 ID 可核对，不能看到两次半份目录就开始刷课。
+        # 因此首次完整观察 24 次（约 7 秒）；后续只要已知未完成课件都在，
+        # 连续两次一致即可，避免每节课都额外等待。
+        required_samples = 24 if observe_all else 2
+        for sample in range(24):
+            last = await self._catalog_items(page)
+            signature = tuple(sorted(
+                (item["id"], item["type"], item["speed"], tuple(item["path"]))
+                for item in last
+            ))
+            if (sample + 1 >= required_samples and signature and signature == previous
+                    and expected.issubset({item["id"] for item in last})):
+                return last
+            previous = signature
+            await asyncio.sleep(0.3)
+        return last
+
+    async def _read_catalog(
+        self, page: Page, focus_paths=(), expected_keys=(), observe_all: bool = False
+    ) -> list[dict]:
+        await self._open_index(page)
+        await self._expand_catalog(page, focus_paths)
+        return await self._wait_catalog_stable(page, expected_keys, observe_all)
+
+    async def _refresh_catalog(self, page: Page, missing: set[str]) -> None:
+        names = "、".join(self._known_titles.get(key, key) for key in sorted(missing))
+        logger.warn(f"智慧职教目录未返回《{names}》，重新进入课程目录并展开对应章节。")
+        await page.goto(self.index_url, wait_until="domcontentloaded")
+
     async def list_lessons(self, page: Page) -> list[Lesson]:
         supported = ("video", "ppt", "pdf")
+        focus_paths = ()
+        observe_all = not self._known_keys
+        expected_keys = self._known_keys - self._known_finished_keys
         for attempt in range(3):
-            data = await self._read_catalog(page)
+            data = await self._read_catalog(page, focus_paths, expected_keys, observe_all)
             keys = {item["id"] for item in data if item["type"] in supported}
             missing = self._known_keys - keys
             unconfirmed_missing = missing - self._known_finished_keys
@@ -173,9 +224,13 @@ class IcveAdapter(PlatformAdapter):
                 )
             logger.warn(
                 f"智慧职教目录本次少了 {len(unconfirmed_missing)} 节未确认完成课件，"
-                "重新读取以防漏刷。"
+                "重新进入目录核对以防漏刷。"
             )
-            await page.reload(wait_until="domcontentloaded")
+            focus_paths = tuple(
+                self._paths[key] for key in unconfirmed_missing if key in self._paths
+            )
+            expected_keys = self._known_keys - self._known_finished_keys
+            await self._refresh_catalog(page, unconfirmed_missing)
         self._known_keys.update(keys)
         self._known_finished_keys.update(
             item["id"] for item in data
@@ -258,15 +313,57 @@ class IcveAdapter(PlatformAdapter):
                 raise ValueError("未找到文档页码")
             return int(match.group(1)), int(match.group(2))
 
+        def control_scopes():
+            if lesson.kind == "ppt":
+                return (pager, page.locator(".FilePreview").first, page)
+            parent = pager.locator("xpath=..")
+            return (parent, parent.locator("xpath=.."), page)
+
+        async def click_turn(name: str) -> bool:
+            arrow = ".el-icon-arrow-right" if name == "下一页" else ".el-icon-arrow-left"
+            for scope in control_scopes():
+                candidates = (
+                    scope.get_by_role("button", name=name, exact=True),
+                    scope.get_by_text(name, exact=True),
+                    scope.locator(f'[aria-label="{name}"], [title="{name}"]'),
+                    scope.locator(
+                        f"button:has({arrow}), [role='button']:has({arrow}), a:has({arrow})"
+                    ),
+                    scope.locator(arrow).locator("xpath=.."),
+                )
+                for candidate in candidates:
+                    if not await candidate.count() or not await candidate.first.is_visible():
+                        continue
+                    try:
+                        await candidate.first.click(timeout=3000)
+                        return True
+                    except Exception:
+                        continue
+            return False
+
         async def turn(name: str, target: int) -> None:
-            button = (pager if lesson.kind == "ppt" else page).get_by_role(
-                "button", name=name, exact=True).first
-            await button.click(timeout=5000)
-            for _ in range(20):
-                if (await position())[0] == target:
+            for _ in range(2):
+                before, _ = await position()
+                if before == target:
                     return
-                await asyncio.sleep(0.25)
-            raise TimeoutError(f"文档翻页后未到第 {target} 页")
+                if await click_turn(name):
+                    for _ in range(60):
+                        if should_stop():
+                            return
+                        try:
+                            current, _ = await position()
+                        except Exception:
+                            await asyncio.sleep(0.25)
+                            continue
+                        if current == target:
+                            return
+                        if current != before:
+                            raise TimeoutError(f"文档翻页后到了意外页码 {current}")
+                        await asyncio.sleep(0.25)
+                if should_stop():
+                    return
+                await asyncio.sleep(1)
+            raise TimeoutError(f"未能点击或确认文档{name}到第 {target} 页")
 
         try:
             current, total = await position()

@@ -225,8 +225,9 @@ class UrlList(ttk.Frame):
     def _refresh(self) -> None:
         for i, record in enumerate(self.rows, 1):
             record["label"].configure(text=f"{i}.")
-            record["handle"].configure(
-                text="⣿" if len(self.rows) > 1 else " ")
+            # 即使当前只有一条地址，也保留手柄。否则界面还提示“按住左边
+            # ⣿”，左边却是空白，用户无法知道该从哪里拖动。
+            record["handle"].configure(text="⣿")
         filled = len([r for r in self.rows if r["var"].get().strip()])
         self.count_label.configure(text=f"已填 {filled} 门课程" if filled else "")
         self.scroll.refresh()
@@ -465,6 +466,9 @@ class CourseMateGUI:
         self._start_tray()
         self.logger.add_sink(self._on_log)
         self.load_config()
+        # 配置文件不存在或损坏时，load_config 会提前返回；仍要按全部标签页
+        # 的真实高度设置最小窗口，不能让 AI 页底部说明被日志区裁掉。
+        self._update_minsize()
         self._update_browser_hint()
         self._heal_autostart()
         root.bind("<Configure>", self._on_configure)
@@ -1546,14 +1550,14 @@ class CourseMateGUI:
             self._tidy_comboboxes(child)
 
     def _update_minsize(self) -> None:
-        """字号越大，装下最高的那一类设置就需要越高的窗口。
+        """字号越大，所有标签页和日志区都必须完整可见。
 
-        设置页不滚动（滚动就有残影），所以放不下时只能是被裁掉一截。
-        与其让用户看不全，不如把窗口的最小高度顶上去——
-        字号 24 时最高的「运行」要 467px，700 高的窗口装不下。
+        不能只按设置页估算：AI 答题页底部的说明文字也会被日志区挤住。
+        直接使用 Tk 已计算的整窗请求高度，才能同时覆盖课程、AI 和设置页。
         """
         size = int(round(self.font_size_var.get()))
-        want = max(700, 660 + size * 9)
+        self.root.update_idletasks()
+        want = max(700, 660 + size * 9, self.root.winfo_reqheight())
         # 但别把最小高度顶到超出屏幕：小屏笔记本上那样会连窗口都摆不下。
         # 到那一步只能请用户自己把字号调小，总比窗口拖不动强
         cap = max(700, self.root.winfo_screenheight() - 90)

@@ -97,11 +97,14 @@ def main() -> int:
     if args.expect_shortcut and LNK.exists():
         target = ps("$sh=New-Object -ComObject WScript.Shell; "
                     f"$sh.CreateShortcut('{LNK}').TargetPath")
+        arguments = ps("$sh=New-Object -ComObject WScript.Shell; "
+                       f"$sh.CreateShortcut('{LNK}').Arguments")
         check("快捷方式指向 exe，不是 pythonw",
               target.lower().endswith("coursemate.exe"),
               f"指向了 {target}——这样跑起来的进程是 Python，"
               f"任务管理器里显示的就是 Python 和它的图标")
         check("快捷方式指向本次产物", Path(target).resolve() == exe if target else False, target)
+        check("快捷方式没有遗留脚本参数", not arguments, arguments)
     else:
         print("  [SKIP] 默认打包不改根目录快捷方式")
 
@@ -118,6 +121,9 @@ def main() -> int:
         check("启动.bat 里 exe 排在 pythonw 前面", exe_at >= 0 and exe_at < py_at,
               f"exe 在第 {exe_at} 条 start，pythonw 在第 {py_at} 条——"
               f"先跑 pythonw 的话任务管理器里还是显示 Python")
+        expected_start = str(exe.relative_to(ROOT)).replace("/", "\\").lower()
+        actual_start = starts[exe_at].replace("/", "\\").lower() if exe_at >= 0 else ""
+        check("启动.bat 首选本次产物", expected_start in actual_start, actual_start)
 
     print(f"\n通过 {len(PASS)} 项，失败 {len(FAIL)} 项")
     if FAIL:
