@@ -251,6 +251,7 @@ def point_shortcut_at_exe(exe: Path) -> None:
 $sh = New-Object -ComObject WScript.Shell
 $lnk = $sh.CreateShortcut('{link}')
 $lnk.TargetPath = '{exe}'
+$lnk.Arguments = ''
 $lnk.WorkingDirectory = '{exe.parent}'
 $lnk.IconLocation = '{exe},0'
 $lnk.Description = '{DISPLAY_NAME}'

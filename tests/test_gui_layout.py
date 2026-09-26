@@ -77,6 +77,37 @@ nb.select(2)
 root.update_idletasks()
 root.update()
 
+# 课程页和 AI 答题页不能为了给日志区腾位置而被裁掉。此前最小高度只按
+# 设置页估算，AI 页最后一行提示会被下方的控制条盖住。字号四档都要在
+# 最小窗口高度下检查，不能只修默认字号。
+print("\n== 三个标签页均不裁切 ==")
+for size in (10, 15, 20, 24):
+    app.font_size_var.set(float(size))
+    app._apply_font_size()
+    wanted = max(700, 660 + size * 9, root.winfo_reqheight())
+    cap = max(700, root.winfo_screenheight() - 90)
+    mw, mh = root.minsize()
+    root.geometry(f"{mw}x{mh}")
+    root.update_idletasks()
+    root.update()
+    if wanted <= cap:
+        for index, name in enumerate(("课程", "AI 答题", "设置")):
+            nb.select(index)
+            root.update_idletasks()
+            tab = nb.winfo_children()[index]
+            check(f"字号{size}：{name}页高度足够显示全部内容",
+                  tab.winfo_height() >= tab.winfo_reqheight(),
+                  f"需要 {tab.winfo_reqheight()}px，实际只有 {tab.winfo_height()}px")
+    else:
+        check(f"字号{size}：小屏时最小高度不会超出屏幕",
+              mh == cap, f"请求 {wanted}px，上限 {cap}px，实际最小高度 {mh}px")
+app.font_size_var.set(15.0)
+app._apply_font_size()
+root.geometry("1100x820")
+nb.select(2)
+root.update_idletasks()
+root.update()
+
 SECTIONS = ["界面", "浏览器", "运行", "网络", "日志", "本地题库", "数据", "关于"]
 
 # --- 1. 设置页：左分类右内容，不滚动 ---

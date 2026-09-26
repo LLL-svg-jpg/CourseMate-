@@ -89,6 +89,9 @@ async def test_continue_next_address():
 
     async def incomplete(page, adapter, url, *args):
         opened.append(url)
+        if url == "first":
+            # 模拟 list_lessons() 的目录核对异常，必须由 run() 捕获后继续第二地址。
+            raise RuntimeError("智慧职教目录本次少了未确认完成课件")
         return False
 
     async def idle(*args):
