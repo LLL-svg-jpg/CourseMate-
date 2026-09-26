@@ -18,7 +18,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from coursemate.gui import CourseMateGUI, ScrollFrame
+from coursemate.gui import CourseMateGUI, READONLY_COMBO_STYLE, ScrollFrame
 
 PASS, FAIL = [], []
 
@@ -286,6 +286,21 @@ for _idx in range(3):
             if isinstance(_k, ttk.Combobox) and _k not in all_combos:
                 all_combos.append(_k)
 check("找到了所有下拉框", len(all_combos) >= 5, str(len(all_combos)))
+readonly_combos = [cb for cb in all_combos if cb.instate(("readonly",))]
+check("只读下拉框使用无蓝底焦点样式",
+      bool(readonly_combos) and all(cb.cget("style") == READONLY_COMBO_STYLE
+                                    for cb in readonly_combos),
+      str([cb.cget("style") for cb in readonly_combos]))
+style = ttk.Style()
+for option, expected in (
+    ("foreground", "#000000"),
+    ("selectforeground", "#000000"),
+    ("selectbackground", "#ffffff"),
+):
+    focused = str(style.lookup(READONLY_COMBO_STYLE, option, ("readonly", "focus")))
+    plain = str(style.lookup(READONLY_COMBO_STYLE, option, ("readonly",)))
+    check(f"只读下拉框焦点态 {option} 不变蓝", focused == plain == expected,
+          f"focus={focused}, readonly={plain}")
 
 
 def popdown_fonts():
@@ -318,7 +333,7 @@ for cb in all_combos:
     if not cb.selection_present():
         continue                       # 禁用态的框选不上，跳过
     cb.event_generate("<<ComboboxSelected>>")
-    root.update_idletasks()
+    root.update()
     if cb.selection_present():
         leftover.append(str(cb))
 check("选完模型/服务商后不留蓝底（不用再点一下）", not leftover,
@@ -569,10 +584,14 @@ def font_size_of(style_name):
     raise ValueError(f"看不懂的字体值: {f!r}")
 
 
+check("只读下拉框字体和界面一致", font_size_of(READONLY_COMBO_STYLE) == 15,
+      str(ttk.Style().lookup(READONLY_COMBO_STYLE, "font")))
 check("导航项字体跟着字号走", font_size_of("NavItem.TLabel") == 15,
       str(ttk.Style().lookup("NavItem.TLabel", "font")))
 app.font_size_var.set(21.0)
 app._apply_font_size()
+check("调大字号后只读下拉框也跟着变", font_size_of(READONLY_COMBO_STYLE) == 21,
+      str(ttk.Style().lookup(READONLY_COMBO_STYLE, "font")))
 check("调大字号后导航项也跟着变", font_size_of("NavItem.TLabel") == 21,
       str(ttk.Style().lookup("NavItem.TLabel", "font")))
 check("选中态的导航项也跟着变", font_size_of("NavItemOn.TLabel") == 21)

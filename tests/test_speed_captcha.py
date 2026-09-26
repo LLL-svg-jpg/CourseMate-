@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import sys
 import tempfile
 from pathlib import Path
@@ -96,6 +97,46 @@ def test_captcha_option() -> None:
     # 不破解验证码是刻意的选择，别哪天被"顺手实现"了
     for bad in ("solve_captcha", "bypass_captcha", "crack_captcha", "slider_solve"):
         check(f"没有 {bad} 这类破解入口", bad not in src.lower() and bad not in gsrc.lower())
+
+    from coursemate.platforms import chaoxing, icve, zhihuishu
+    cxsrc = Path(chaoxing.__file__).read_text(encoding="utf-8")
+    isrc = Path(icve.__file__).read_text(encoding="utf-8")
+    zsrc = Path(zhihuishu.__file__).read_text(encoding="utf-8")
+    check("智慧职教自动勾选协议后登录", "await agreement.check(" in isrc)
+    check("学习通自动勾选明确协议框后登录",
+          "await box.check(" in cxsrc and "await login_button.click()" in cxsrc)
+    check("智慧树仅匹配明确协议框后登录",
+          "AGREEMENT_SELECTORS" in zsrc and "await agreement.check()" in zsrc)
+    check("人工验证会暂停计时", "clock.pause()" in src and "clock.resume()" in src)
+
+
+def test_manual_verification_hold() -> None:
+    print("\n== 人工验证暂停播放 ==")
+    from coursemate.workers import hold_playback_for_manual_check
+
+    class Frame:
+        def __init__(self):
+            self.states = []
+
+        async def evaluate(self, _script, holding):
+            self.states.append(holding)
+            return True
+
+    class Adapter:
+        def __init__(self, frame):
+            self.frame = frame
+
+        async def video_frame(self, _page):
+            return self.frame
+
+    async def scenario():
+        frame = Frame()
+        adapter = Adapter(frame)
+        await hold_playback_for_manual_check(object(), adapter, True)
+        await hold_playback_for_manual_check(object(), adapter, False)
+        return frame.states
+
+    check("验证出现和结束都会向播放器发送暂停状态", asyncio.run(scenario()) == [True, False])
 
 
 def test_gui_wiring() -> None:
@@ -204,7 +245,7 @@ def test_gui_wiring() -> None:
 
 if __name__ == "__main__":
     print("CourseMate 倍速与验证码提醒测试")
-    for fn in (test_speed_ceiling, test_captcha_option, test_gui_wiring):
+    for fn in (test_speed_ceiling, test_captcha_option, test_manual_verification_hold, test_gui_wiring):
         fn()
     print(f"\n通过 {len(PASS)} 项，失败 {len(FAIL)} 项")
     if FAIL:

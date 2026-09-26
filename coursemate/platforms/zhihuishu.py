@@ -36,6 +36,13 @@ class ZhihuishuAdapter(PlatformAdapter):
     USERNAME_SEL = 'input[name="mobile"]'
     PASSWORD_SEL = 'input[type="password"]'
     LOGIN_BTN_SEL = ".btn-block__grandient_login"
+    AGREEMENT_SELECTORS = (
+        '#agreement input[type="checkbox"]',
+        '.agreement input[type="checkbox"]',
+        '[class*="agreement" i] input[type="checkbox"]',
+        'input[type="checkbox"][name*="agree" i]',
+        'input[type="checkbox"][id*="agree" i]',
+    )
 
     # 智慧树同时在跑多套播放页：studyh5 / studyvideoh5 / fusioncourseh5 / hike，
     # DOM 结构并不一致。硬编码单个选择器必然在某些课上落空，
@@ -120,13 +127,19 @@ class ZhihuishuAdapter(PlatformAdapter):
                 await page.fill(self.USERNAME_SEL, username, timeout=10000)
                 await page.fill(self.PASSWORD_SEL, password, timeout=10000)
                 await page.wait_for_timeout(600)
+                for sel in self.AGREEMENT_SELECTORS:
+                    agreement = page.locator(sel).first
+                    if (await agreement.count() and await agreement.is_visible()
+                            and not await agreement.is_checked()):
+                        await agreement.check()
+                        break
                 await page.click(self.LOGIN_BTN_SEL, timeout=10000)
                 logger.info("已提交登录，等待跳转...")
             except Exception as exc:
                 logger.warn(f"自动登录未能完成，请手动操作：{Logger.summarize(exc)}", shift=True)
             logger.warn(
-                "若出现滑块验证或需要勾选用户协议，请手动完成"
-                "——本程序不代你接受条款，也不破解验证码。", shift=True)
+                "若出现未识别的登录提示或滑块验证，请手动完成"
+                "——本程序不自动破解验证码。", shift=True)
         else:
             logger.warn("未配置账号密码，请在浏览器窗口中手动登录...", shift=True)
 
@@ -713,12 +726,10 @@ class ZhihuishuAdapter(PlatformAdapter):
 
     async def detect_captcha(self, page: Page) -> bool:
         try:
-            return await page.query_selector(self.CAPTCHA_SEL) is not None
+            node = page.locator(self.CAPTCHA_SEL).first
+            return bool(await node.count() and await node.is_visible())
         except Exception:
             return False
 
     async def captcha_cleared(self, page: Page) -> bool:
-        try:
-            return await page.query_selector(self.CAPTCHA_SEL) is None
-        except Exception:
-            return True
+        return not await self.detect_captcha(page)

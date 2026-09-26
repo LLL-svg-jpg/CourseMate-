@@ -30,10 +30,12 @@ _KEEP_PLAYING_JS = """
     v.__coursemateDoneStopped = false;
 
     const resume = () => {
-        if (v.ended || !v.isConnected) return;
+        if (v.__coursemateManualHold || v.ended || !v.isConnected) return;
         const result = v.play();
         if (result && typeof result.catch === 'function') result.catch(() => {});
     };
+
+    if (v.__coursemateManualHold) return false;
 
     // 平台可能每隔几秒主动 pause。只靠 Python 轮询续播会留下最多 2 秒的
     // 可见停顿；给当前 video 装一次事件守卫，暂停发生后立刻恢复。
@@ -108,6 +110,27 @@ async def stop_completed_playback(frame: Page | Frame) -> None:
         v.__coursemateDoneStopped = true;
         if (v.currentTime < 5 && !v.paused) v.pause();
     }""")
+
+
+async def hold_playback_for_manual_check(
+    page: Page, adapter: PlatformAdapter, holding: bool
+) -> None:
+    """人工处理验证时暂停视频，避免续播守卫把它重新拉起。"""
+    try:
+        frame = await adapter.video_frame(page)
+        await frame.evaluate(
+            """holding => {
+                const v = document.querySelector('video');
+                if (!v) return false;
+                v.__coursemateManualHold = holding;
+                if (holding && !v.paused) v.pause();
+                return true;
+            }""",
+            holding,
+        )
+    except Exception:
+        # 验证页有时已跳离播放器；此时没有视频可暂停也不影响人工处理。
+        pass
 
 
 async def task_monitor(tasks: list[asyncio.Task]) -> None:
@@ -205,11 +228,14 @@ async def captcha_worker(
             if config.beep_on_captcha:
                 print("\a", end="", flush=True)
 
-            waited = 0.0
-            while not await adapter.captcha_cleared(page):
-                await asyncio.sleep(2)
-                waited += 2
-            clock.add_paused(waited)
+            await hold_playback_for_manual_check(page, adapter, True)
+            clock.pause()
+            try:
+                while not await adapter.captcha_cleared(page):
+                    await asyncio.sleep(2)
+            finally:
+                waited = clock.resume()
+                await hold_playback_for_manual_check(page, adapter, False)
             logger.info(f"人机验证已完成，本次等待 {waited:.0f} 秒不计入学习时长。", shift=True)
             # 验证刚过一段时间内不会再触发，避免空转
             await asyncio.sleep(30)

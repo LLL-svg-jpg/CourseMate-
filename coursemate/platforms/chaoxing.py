@@ -32,8 +32,15 @@ class ChaoxingAdapter(PlatformAdapter):
     CATALOG_SEL = ".posCatalog_select"
     CATALOG_NAME_SEL = ".posCatalog_name"
     COMPLETED_SEL = ".icon_Completed, .icon_yiwanc"
-    # 超星的滑块/验证弹层
-    CAPTCHA_SELECTORS = ("#nc_1_wrapper", ".nc-container", ".geetest_panel")
+    # 只识别可见的验证控件，用于暂停并提醒用户手动处理；不尝试读取或破解验证码。
+    CAPTCHA_SELECTORS = (
+        "#nc_1_wrapper", ".nc-container", ".geetest_panel",
+        "#verifyCode", "#validateCode", "#imgCode",
+        'input[placeholder*="验证码"]',
+        'input[name*="captcha" i]', 'input[id*="captcha" i]',
+        'input[name*="verify" i]', 'input[id*="verify" i]',
+        'img[id*="captcha" i]', 'img[id*="verify" i]',
+    )
     # 视频内弹题
     QUIZ_TITLE_SEL = ".ans-videoquiz-title, .videoquiz-title"
     QUIZ_OPTION_SEL = ".ans-videoquiz-opt, .videoquiz-opt"
@@ -137,31 +144,27 @@ class ChaoxingAdapter(PlatformAdapter):
                 await page.locator("#phone").fill(username)
                 await page.locator("#pwd").fill(password)
                 await page.wait_for_timeout(400)
-                # 不同学校的登录页有 input 复选框或自绘协议框两种版本。
-                for sel in (
-                    '#passportAgreement input[type="checkbox"]',
-                    'input[type="checkbox"][name*="agree"]',
-                    'input[type="checkbox"][id*="agree"]',
-                    '.agreement input[type="checkbox"]',
-                ):
-                    box = page.locator(sel).first
-                    if await box.count() and await box.is_visible() and not await box.is_checked():
-                        await box.check()
-                        break
-                await page.locator("#loginBtn").click()
-                await page.wait_for_timeout(600)
-                # 有些版本会在登录按钮后再弹一次协议确认/“进入”按钮。
-                await page.evaluate(
-                    """() => {
-                        const wanted = /^(同意并登录|同意并继续|确认并登录|进入)$/;
-                        const node = [...document.querySelectorAll('button,a')].find(el => {
-                            const r = el.getBoundingClientRect();
-                            return r.width && r.height && wanted.test((el.innerText || '').trim());
-                        });
-                        if (node) node.click();
-                    }"""
-                )
-                logger.warn("若出现滑块验证，请手动完成——本程序不自动破解验证码。", shift=True)
+                login_button = page.locator("#loginBtn").first
+                if not await login_button.count() or not await login_button.is_visible():
+                    # 用户可能在填充刚结束时已自行提交；页面既然离开了登录表单，
+                    # 就绝不能再对新页面里碰巧同名的元素自动点击。
+                    logger.info("登录页已变化，等待登录结果。")
+                else:
+                    # 不同学校的登录页有 input 复选框或自绘协议框两种版本。
+                    # 只处理登录页中带 agree/agreement 语义的明确协议框。
+                    for sel in (
+                        '#passportAgreement input[type="checkbox"]',
+                        'input[type="checkbox"][name*="agree"]',
+                        'input[type="checkbox"][id*="agree"]',
+                        '.agreement input[type="checkbox"]',
+                    ):
+                        box = page.locator(sel).first
+                        if (await box.count() and await box.is_visible()
+                                and not await box.is_checked()):
+                            await box.check()
+                            break
+                    await login_button.click()
+                    logger.info("已提交学习通账号密码；如出现验证，请在浏览器手动完成。")
             except Exception as exc:
                 logger.warn(f"自动填写失败，请手动登录：{Logger.summarize(exc)}")
         else:
@@ -741,7 +744,8 @@ class ChaoxingAdapter(PlatformAdapter):
     async def detect_captcha(self, page: Page) -> bool:
         for sel in self.CAPTCHA_SELECTORS:
             try:
-                if await page.query_selector(sel):
+                node = page.locator(sel).first
+                if await node.count() and await node.is_visible():
                     return True
             except Exception:
                 continue

@@ -24,6 +24,8 @@ class IcveAdapter(PlatformAdapter):
     def __init__(self) -> None:
         self._paths: dict[str, tuple[int, int, int]] = {}
         self._known_keys: set[str] = set()
+        self._known_finished_keys: set[str] = set()
+        self._known_titles: dict[str, str] = {}
         self._start_id = ""
 
     @classmethod
@@ -59,7 +61,8 @@ class IcveAdapter(PlatformAdapter):
                 await page.get_by_placeholder("请输入账号").fill(username, timeout=10000)
                 await page.get_by_placeholder("请输入密码").fill(password, timeout=10000)
                 agreement = page.get_by_role("checkbox").first
-                if not await agreement.is_checked(timeout=10000):
+                if (await agreement.count() and await agreement.is_visible(timeout=10000)
+                        and not await agreement.is_checked(timeout=10000)):
                     await agreement.check(timeout=10000)
                 logger.info("账号密码已填写，协议已勾选，正在点击登录。")
                 await page.locator(".demo-ruleForm .login").click(timeout=10000)
@@ -147,21 +150,44 @@ class IcveAdapter(PlatformAdapter):
         }""")
 
     async def list_lessons(self, page: Page) -> list[Lesson]:
-        for attempt in range(2):
+        supported = ("video", "ppt", "pdf")
+        for attempt in range(3):
             data = await self._read_catalog(page)
-            keys = {item["id"] for item in data if item["type"] in ("video", "ppt", "pdf")}
+            keys = {item["id"] for item in data if item["type"] in supported}
             missing = self._known_keys - keys
-            if not missing:
+            unconfirmed_missing = missing - self._known_finished_keys
+            if not unconfirmed_missing:
+                if missing:
+                    logger.debug(
+                        f"智慧职教目录本次未返回 {len(missing)} 节已确认完成课件，"
+                        "继续核对其余课件。"
+                    )
                 break
-            if attempt == 1:
-                raise RuntimeError(f"智慧职教目录本次少了 {len(missing)} 节，停止使用不完整目录。")
-            logger.warn(f"智慧职教目录本次少了 {len(missing)} 节，重新读取以防漏刷。")
+            if attempt == 2:
+                titles = "、".join(
+                    self._known_titles.get(key, key) for key in sorted(unconfirmed_missing)
+                )
+                raise RuntimeError(
+                    f"智慧职教目录本次少了 {len(unconfirmed_missing)} 节未确认完成课件"
+                    f"（{titles}），停止使用不完整目录。"
+                )
+            logger.warn(
+                f"智慧职教目录本次少了 {len(unconfirmed_missing)} 节未确认完成课件，"
+                "重新读取以防漏刷。"
+            )
             await page.reload(wait_until="domcontentloaded")
         self._known_keys.update(keys)
+        self._known_finished_keys.update(
+            item["id"] for item in data
+            if item["type"] in supported and item["speed"] >= 100
+        )
+        self._known_titles.update(
+            {item["id"]: item["name"] for item in data if item["type"] in supported}
+        )
         self._paths = {item["id"]: tuple(item["path"]) for item in data}
         lessons = [Lesson(item["name"], item["id"], item["speed"] >= 100,
                           item["id"], item["type"])
-                   for item in data if item["type"] in ("video", "ppt", "pdf")]
+                   for item in data if item["type"] in supported]
         for i, lesson in enumerate(lessons):
             if lesson.key == self._start_id and lesson.finished:
                 self._start_id = next(
@@ -200,6 +226,7 @@ class IcveAdapter(PlatformAdapter):
                 else:
                     await page.get_by_text(re.compile(r"^\s*\d+\s*/\s*\d+\s*$")) \
                         .first.wait_for(timeout=20000)
+                await self._dismiss_resume(page)
                 return True
             except Exception:
                 return False
@@ -220,6 +247,7 @@ class IcveAdapter(PlatformAdapter):
         return True
 
     async def read_document(self, page: Page, lesson: Lesson, should_stop) -> bool:
+        await self._dismiss_resume(page)
         pager = (page.locator(".FilePreview .page") if lesson.kind == "ppt" else
                  page.get_by_text(re.compile(r"^\s*\d+\s*/\s*\d+\s*$")).first)
 
@@ -271,7 +299,11 @@ class IcveAdapter(PlatformAdapter):
     async def _dismiss_resume(self, page: Page) -> None:
         box = page.locator(".el-message-box").filter(has_text="上次观看到")
         if await box.count() and await box.first.is_visible():
-            await box.first.locator("button.el-button--primary").click()
+            confirm = box.first.get_by_role("button", name="确定", exact=True)
+            if await confirm.count():
+                await confirm.first.click()
+            else:
+                await box.first.locator("button.el-button--primary").click()
             try:
                 await box.first.wait_for(state="hidden", timeout=15000)
             except Exception:
