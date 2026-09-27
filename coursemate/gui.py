@@ -419,8 +419,8 @@ class CourseMateGUI:
 
         root.title(APP_NAME)
         root.minsize(1000, 700)
-        self._restore_geometry()
         self._set_icon()
+        self._restore_geometry()
 
         # 箭头单独放大：它是唯一一个纯靠形状表意的控件，
         # 跟正文一样大就太不起眼，找不到点哪儿能收起日志
@@ -2060,12 +2060,14 @@ class CourseMateGUI:
 
     def load_config(self) -> None:
         if not CONFIG_PATH.exists():
+            self._apply_font_size()
             self._append_log("SYSTEM", "未找到 config.toml，将使用默认设置。填好后点「保存配置」。")
             self._toggle_answer_fields()
             return
         try:
             cfg = Config(CONFIG_PATH)
         except ConfigError as exc:
+            self._apply_font_size()
             self._append_log("ERROR", f"配置文件读取失败：{exc}")
             self._toggle_answer_fields()
             return

@@ -11,6 +11,7 @@ import asyncio
 import sys
 import types
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -388,6 +389,131 @@ def test_chapter_partial_answers_are_saved() -> None:
     check("部分答案暂存成功后可以安全离开", ok is True)
 
 
+def test_answer_disabled_only_reminds() -> None:
+    print("\n== 关闭自动答题时只提醒 ==")
+    from coursemate.workers import question_worker
+
+    class Adapter:
+        name = "模拟平台"
+
+        def __init__(self):
+            self.detected = 0
+            self.closed = False
+
+        async def detect_question(self, _page):
+            self.detected += 1
+            return self.detected <= 2
+
+        async def close_question(self, _page):
+            self.closed = True
+
+    class Clock:
+        def __init__(self):
+            self.paused = []
+
+        def add_paused(self, seconds):
+            self.paused.append(seconds)
+
+    async def scenario(config):
+        adapter, clock = Adapter(), Clock()
+        holds = []
+        released = asyncio.Event()
+        real_sleep = asyncio.sleep
+
+        async def fast_sleep(_seconds):
+            await real_sleep(0.001)
+
+        async def hold(_page, _adapter, holding, reason="captcha"):
+            holds.append((holding, reason))
+            if not holding:
+                released.set()
+
+        with patch("coursemate.workers.asyncio.sleep", fast_sleep), \
+             patch("coursemate.workers.hold_playback_for_manual_check", hold):
+            task = asyncio.create_task(question_worker(
+                object(), adapter, config,
+                clock, None, object(),
+            ))
+            try:
+                await asyncio.wait_for(released.wait(), timeout=2)
+            finally:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+        return adapter, clock, holds
+
+    adapter, clock, holds = asyncio.run(scenario(
+        types.SimpleNamespace(answer_enabled=False)))
+    check("关闭后只等待人工处理，不调用关窗", not adapter.closed)
+    check("弹题期间暂停，结束后释放对应原因", holds == [(True, "question"), (False, "question")], str(holds))
+    check("人工处理时间不计入学习时长", len(clock.paused) == 1)
+
+
+def test_chaoxing_without_feedback_uses_auto_path() -> None:
+    print("\n== 学习通缺少反馈实现时仍进入自动路径 ==")
+    from coursemate.platforms.chaoxing import ChaoxingAdapter
+    from coursemate.workers import question_worker
+
+    async def scenario():
+        adapter = ChaoxingAdapter()
+        filled, submitted, holds = [], [], []
+        closed = asyncio.Event()
+        real_sleep = asyncio.sleep
+
+        async def fast_sleep(_seconds):
+            await real_sleep(0.001)
+
+        async def detect(_page):
+            return not closed.is_set()
+
+        async def extract(_page):
+            return [make_q(2)]
+
+        async def fill(_page, _question, keys, _result):
+            filled.append(keys)
+            return True
+
+        async def submit(_page, auto_submit):
+            submitted.append(auto_submit)
+            return True
+
+        async def close(_page):
+            closed.set()
+
+        async def hold(_page, _adapter, holding, reason="captcha"):
+            holds.append((holding, reason))
+
+        adapter.detect_question = detect
+        adapter.extract_questions = extract
+        adapter.fill_answer = fill
+        adapter.submit_answer = submit
+        adapter.close_question = close
+        config = types.SimpleNamespace(answer_enabled=True, retry_until_correct=True,
+                                       answer_cache=False)
+        clock = types.SimpleNamespace(add_paused=lambda _seconds: None)
+        with patch("coursemate.workers.asyncio.sleep", fast_sleep), \
+             patch("coursemate.workers.hold_playback_for_manual_check", hold):
+            task = asyncio.create_task(question_worker(
+                object(), adapter, config, clock, None, object(),
+            ))
+            try:
+                await asyncio.wait_for(closed.wait(), timeout=2)
+            finally:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+        return filled, submitted, holds
+
+    filled, submitted, holds = asyncio.run(scenario())
+    check("学习通进入自动填写", filled == [["A"]], str(filled))
+    check("学习通进入自动提交", submitted == [True], str(submitted))
+    check("未改为人工等待", not holds, str(holds))
+
+
 if __name__ == "__main__":
     print("CourseMate 试错答题测试")
     install_stub()
@@ -395,7 +521,9 @@ if __name__ == "__main__":
                test_retry_loop, test_non_choice, test_chapter_test_no_bruteforce,
                test_chapter_preserves_existing_answers,
                test_chapter_submit_must_be_confirmed,
-               test_chapter_partial_answers_are_saved):
+               test_chapter_partial_answers_are_saved,
+               test_answer_disabled_only_reminds,
+               test_chaoxing_without_feedback_uses_auto_path):
         fn()
     print(f"\n通过 {len(PASS)} 项，失败 {len(FAIL)} 项")
     if FAIL:

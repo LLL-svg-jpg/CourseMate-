@@ -86,7 +86,7 @@ def test_contract() -> None:
     ]
     for cls in (ZhihuishuAdapter, ChaoxingAdapter, IcveAdapter):
         missing = [m for m in required if not hasattr(cls, m)]
-        check(f"{cls.name} 实现全部契约方法", not missing, f"missing={missing}")
+        check(f"{cls.name} 暴露契约方法", not missing, f"missing={missing}")
         # 抽象方法必须被真正覆盖，而不是继承基类的抽象声明
         unimplemented = [
             m for m in ("is_logged_in", "login", "open_course", "list_lessons",
@@ -95,6 +95,21 @@ def test_contract() -> None:
         ]
         check(f"{cls.name} 抽象方法均已覆盖", not unimplemented, f"{unimplemented}")
         check(f"{cls.name} 可实例化", isinstance(cls(), PlatformAdapter))
+
+    question_methods = (
+        "detect_question", "extract_questions", "fill_answer", "submit_answer",
+        "clear_selection", "read_feedback", "confirm_and_close", "close_question",
+    )
+    expected = {
+        ZhihuishuAdapter: set(question_methods),
+        ChaoxingAdapter: set(question_methods[:4] + question_methods[7:]),
+        IcveAdapter: set(),
+    }
+    for cls, wanted in expected.items():
+        implemented = {m for m in question_methods
+                       if getattr(cls, m) is not getattr(PlatformAdapter, m)}
+        check(f"{cls.name} 弹题能力与实际覆盖一致", implemented == wanted,
+              f"implemented={sorted(implemented)}")
 
 
 def test_question_typing() -> None:

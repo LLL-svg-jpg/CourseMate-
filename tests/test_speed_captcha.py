@@ -136,7 +136,38 @@ def test_manual_verification_hold() -> None:
         await hold_playback_for_manual_check(object(), adapter, False)
         return frame.states
 
-    check("验证出现和结束都会向播放器发送暂停状态", asyncio.run(scenario()) == [True, False])
+    check("验证出现和结束都会向播放器发送暂停状态",
+          asyncio.run(scenario()) == [[True, "captcha"], [False, "captcha"]])
+
+
+def test_overlapping_manual_holds() -> None:
+    print("\n== 验证码与弹题暂停互不覆盖 ==")
+    from playwright.async_api import async_playwright
+    from coursemate.workers import hold_playback_for_manual_check
+
+    class Adapter:
+        async def video_frame(self, page):
+            return page
+
+    async def scenario():
+        async with async_playwright() as playwright:
+            browser = await playwright.chromium.launch(headless=True, channel="msedge")
+            page = await browser.new_page()
+            await page.set_content("<video></video>")
+            adapter = Adapter()
+            await hold_playback_for_manual_check(page, adapter, True, "captcha")
+            await hold_playback_for_manual_check(page, adapter, True, "question")
+            await hold_playback_for_manual_check(page, adapter, False, "captcha")
+            during_question = await page.locator("video").evaluate(
+                "v => v.__coursemateManualHold")
+            await hold_playback_for_manual_check(page, adapter, False, "question")
+            after_question = await page.locator("video").evaluate(
+                "v => v.__coursemateManualHold")
+            await browser.close()
+            return during_question, after_question
+
+    check("只解除验证码时弹题仍保持暂停",
+          asyncio.run(scenario()) == (True, False))
 
 
 def test_gui_wiring() -> None:
@@ -245,7 +276,8 @@ def test_gui_wiring() -> None:
 
 if __name__ == "__main__":
     print("CourseMate 倍速与验证码提醒测试")
-    for fn in (test_speed_ceiling, test_captcha_option, test_manual_verification_hold, test_gui_wiring):
+    for fn in (test_speed_ceiling, test_captcha_option, test_manual_verification_hold,
+               test_overlapping_manual_holds, test_gui_wiring):
         fn()
     print(f"\n通过 {len(PASS)} 项，失败 {len(FAIL)} 项")
     if FAIL:

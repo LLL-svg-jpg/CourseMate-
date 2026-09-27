@@ -276,11 +276,7 @@ class IcveAdapter(PlatformAdapter):
         await page.wait_for_url(f"**/courseware?id={lesson.key}&**", timeout=20000)
         if lesson.kind in ("ppt", "pdf"):
             try:
-                if lesson.kind == "ppt":
-                    await page.locator(".FilePreview .page").wait_for(timeout=20000)
-                else:
-                    await page.get_by_text(re.compile(r"^\s*\d+\s*/\s*\d+\s*$")) \
-                        .first.wait_for(timeout=20000)
+                await page.locator(".FilePreview .page").wait_for(timeout=20000)
                 await self._dismiss_resume(page)
                 return True
             except Exception:
@@ -303,8 +299,7 @@ class IcveAdapter(PlatformAdapter):
 
     async def read_document(self, page: Page, lesson: Lesson, should_stop) -> bool:
         await self._dismiss_resume(page)
-        pager = (page.locator(".FilePreview .page") if lesson.kind == "ppt" else
-                 page.get_by_text(re.compile(r"^\s*\d+\s*/\s*\d+\s*$")).first)
+        pager = page.locator(".FilePreview .page")
 
         async def position() -> tuple[int, int]:
             text = await pager.inner_text(timeout=10000)

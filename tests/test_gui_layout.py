@@ -13,11 +13,14 @@ Python 层拦不住（WS_EX_COMPOSITED 试过，会让界面卡死）。
 import sys
 import time
 import tkinter as tk
+import tkinter.font as tkfont
 import tkinter.ttk as ttk
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from coursemate.config import ConfigError
 from coursemate.gui import CourseMateGUI, READONLY_COMBO_STYLE, ScrollFrame
 
 PASS, FAIL = [], []
@@ -65,7 +68,43 @@ def walk(w, out):
 
 
 root = tk.Tk()
-app = CourseMateGUI(root)
+icon_order = []
+real_set_icon = CourseMateGUI._set_icon
+real_restore_geometry = CourseMateGUI._restore_geometry
+
+
+def record_set_icon(self):
+    icon_order.append("icon")
+    return real_set_icon(self)
+
+
+def record_restore_geometry(self):
+    icon_order.append("restore")
+    return real_restore_geometry(self)
+
+
+with patch.object(CourseMateGUI, "_set_icon", record_set_icon), \
+     patch.object(CourseMateGUI, "_restore_geometry", record_restore_geometry):
+    app = CourseMateGUI(root)
+check("首次绘制前先设置窗口图标", icon_order[:2] == ["icon", "restore"], str(icon_order))
+missing_config = Path(__file__).with_name("__missing_gui_config_for_font_test__.toml")
+check("首次启动测试不读取现有配置", not missing_config.exists())
+app.font_size_var.set(15.0)
+app.provider_box.configure(font="TkDefaultFont")
+with patch("coursemate.gui.CONFIG_PATH", missing_config):
+    app.load_config()
+first_run_font = tkfont.Font(font=app.provider_box.cget("font")).actual("size")
+check("首次无配置也应用默认字号到下拉框", first_run_font == 15,
+      f"实际字号 {first_run_font}")
+app.provider_box.configure(font="TkDefaultFont")
+invalid_config = Mock()
+invalid_config.exists.return_value = True
+with patch("coursemate.gui.CONFIG_PATH", invalid_config), \
+     patch("coursemate.gui.Config", side_effect=ConfigError("test")):
+    app.load_config()
+invalid_run_font = tkfont.Font(font=app.provider_box.cget("font")).actual("size")
+check("配置损坏时也应用默认字号到下拉框", invalid_run_font == 15,
+      f"实际字号 {invalid_run_font}")
 root.geometry("1100x820")
 root.update_idletasks()
 root.update()

@@ -49,9 +49,9 @@ limit_max_minutes = {limit_max_minutes}
 [answer]
 # 是否启用自动答题。关闭则遇到弹题仅暂停并提醒
 enabled = {answer_enabled}
-# 答错后是否继续换答案重试，直到平台判定正确。
-# 开启后必然会提交答案——不提交就拿不到对错反馈。
-# 关闭则退回"只填一次不提交"的保守模式。
+# 答错后是否继续换答案重试；目前仅智慧树视频弹题具备本地 DOM 反馈链路。
+# 开启后进入自动尝试；学习通缺少可靠反馈，可能首次提交后即停止；智慧职教弹题尚未适配。
+# 关闭则只填一次，是否提交由 auto_submit 控制。
 retry_until_correct = {retry_until_correct}
 # 仅在 retry_until_correct = false 时生效：是否提交那唯一一次作答
 auto_submit = {auto_submit}

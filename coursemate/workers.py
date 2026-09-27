@@ -113,20 +113,22 @@ async def stop_completed_playback(frame: Page | Frame) -> None:
 
 
 async def hold_playback_for_manual_check(
-    page: Page, adapter: PlatformAdapter, holding: bool
+    page: Page, adapter: PlatformAdapter, holding: bool, reason: str = "captcha"
 ) -> None:
-    """人工处理验证时暂停视频，避免续播守卫把它重新拉起。"""
+    """人工处理验证码或弹题时暂停视频，避免续播守卫把它重新拉起。"""
     try:
         frame = await adapter.video_frame(page)
         await frame.evaluate(
-            """holding => {
+            """([holding, reason]) => {
                 const v = document.querySelector('video');
                 if (!v) return false;
-                v.__coursemateManualHold = holding;
-                if (holding && !v.paused) v.pause();
+                const reasons = v.__coursemateManualHoldReasons ||= new Set();
+                if (holding) reasons.add(reason); else reasons.delete(reason);
+                v.__coursemateManualHold = reasons.size > 0;
+                if (v.__coursemateManualHold && !v.paused) v.pause();
                 return true;
             }""",
-            holding,
+            [holding, reason],
         )
     except Exception:
         # 验证页有时已跳离播放器；此时没有视频可暂停也不影响人工处理。
@@ -446,18 +448,28 @@ async def question_worker(
 
     视频弹窗开启试错时先按选项尝试；独立测验和考试仍走 AI 答题流程。
 
-    整段流程有总超时兜底：无论发生什么，最后一定会尝试关掉弹窗。
-    宁可这道题没答对，也不能让视频永远停在那里。
+    自动答题有总超时兜底；人工处理模式保留弹窗，等用户处理完再续播。
     """
+    import time
+
     while True:
         try:
             await asyncio.sleep(2)
             if not await adapter.detect_question(page):
                 continue
 
-            import time
-
             paused_at = time.time()
+            if not config.answer_enabled:
+                logger.warn("[需要你处理] 检测到视频弹题，自动答题已关闭，请在浏览器手动处理。",
+                            shift=True)
+                try:
+                    await hold_playback_for_manual_check(page, adapter, True, "question")
+                    while await adapter.detect_question(page):
+                        await asyncio.sleep(2)
+                finally:
+                    await hold_playback_for_manual_check(page, adapter, False, "question")
+                    clock.add_paused(time.time() - paused_at)
+                continue
             try:
                 await asyncio.wait_for(
                     _handle_question_popup(page, adapter, config, provider, cache),
@@ -483,10 +495,11 @@ async def question_worker(
         except Exception as exc:
             if _handle(exc, "答题模块"):
                 return
-            try:
-                await adapter.close_question(page)
-            except Exception:
-                pass
+            if config.answer_enabled:
+                try:
+                    await adapter.close_question(page)
+                except Exception:
+                    pass
 
 
 async def _handle_question_popup(
@@ -496,6 +509,8 @@ async def _handle_question_popup(
     provider: AnswerProvider | None,
     cache: AnswerCache,
 ) -> None:
+    if not config.answer_enabled:
+        return
     questions = await adapter.extract_questions(page)
     if not questions:
         # 检测到弹窗但抠不出题目，至少要把它关掉，否则播放永久卡住

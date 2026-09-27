@@ -287,9 +287,11 @@ async def run(config: Config, should_stop=_noop_stop) -> bool:
     if provider:
         logger.info(f"AI 作答已启用：{provider.name} / {config.model}")
     elif config.answer_enabled:
-        logger.info("未启用 AI：视频弹题可试错，独立测验和考试无参考答案时留空。")
-    if config.retry_until_correct:
-        logger.info("视频弹题模式：答错自动换答案重试，直到平台判定正确。")
+        logger.info("未启用 AI：支持反馈的视频弹题可试错，独立测验和考试无参考答案时留空。")
+    if not config.answer_enabled:
+        logger.info("自动答题已关闭：视频弹题将暂停并提醒人工处理。")
+    elif config.retry_until_correct:
+        logger.info("视频弹题重试已开启：自动提交并读取反馈；缺少反馈实现的平台可能首轮后停止。")
     else:
         logger.info("视频弹题模式：只作答一次" + ("并提交。" if config.auto_submit else "，不提交。"))
     clock = StudyClock()

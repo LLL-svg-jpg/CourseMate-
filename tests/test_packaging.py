@@ -72,6 +72,9 @@ def main() -> int:
     check("ProductName 也填了", len(parts) > 1 and parts[1] == DISPLAY,
           repr(parts[1] if len(parts) > 1 else ""))
     check("版本号不是空的", len(parts) > 2 and bool(parts[2]), repr(parts[2:3]))
+    from coursemate import __version__
+    check("EXE 版本号与源码一致", len(parts) > 2 and parts[2] == f"{__version__}.0",
+          repr(parts[2:3]))
 
     print("\n== exe 内嵌图标 ==")
     ico = ROOT / "assets" / "app.ico"

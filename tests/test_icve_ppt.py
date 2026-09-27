@@ -28,10 +28,11 @@ function step(delta) {
 }
 </script>"""
 
-PDF_HTML = """<meta charset="utf-8"><main><div id="viewer">PDF 预览</div>
-<div><button id="previous" onclick="step(-1)">上一页</button>
+PDF_HTML = """<meta charset="utf-8"><span class="el-input__count">0/50</span>
+<main><div class="FilePreview"><div class="info"><div id="viewer">PDF 预览</div>
+<div class="page"><button id="previous" onclick="step(-1)">上一页</button>
 <span id="pdf-count">3 / 4</span>
-<button id="next" onclick="step(1)">下一页</button></div></main>
+<button id="next" onclick="step(1)">下一页</button></div></div></div></main>
 <div id="resume" class="el-message-box">上次观看到第2页，是否继续观看？
 <button class="el-button--primary" onclick="document.body.dataset.resume='1';
   document.querySelector('#resume').style.display='none'">确定</button></div>
@@ -60,9 +61,9 @@ function step(delta) {
 }
 </script>"""
 
-ICON_PDF_HTML = """<meta charset="utf-8"><main><span id="count">1 / 2</span>
+ICON_PDF_HTML = """<meta charset="utf-8"><main><div class="FilePreview"><div class="page"><span id="count">1 / 2</span>
 <button onclick="step(-1)"><i class="el-icon-arrow-left"></i></button>
-<button onclick="step(1)"><i class="el-icon-arrow-right"></i></button></main>
+<button onclick="step(1)"><i class="el-icon-arrow-right"></i></button></div></div></main>
 <script>
 let current = 1;
 window.visited = [1];
@@ -73,8 +74,8 @@ function step(delta) {
 }
 </script>"""
 
-DELAYED_PDF_HTML = """<meta charset="utf-8"><main><span id="count">1 / 2</span>
-<button id="next" disabled onclick="step()">下一页</button></main>
+DELAYED_PDF_HTML = """<meta charset="utf-8"><main><div class="FilePreview"><div class="page"><span id="count">1 / 2</span>
+<button id="next" disabled onclick="step()">下一页</button></div></div></main>
 <script>
 window.turns = 0;
 setTimeout(() => document.querySelector('#next').disabled = false, 5200);
