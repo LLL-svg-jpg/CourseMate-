@@ -6,7 +6,7 @@ import sys
 from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from tools.first_launch_visual import changed_fraction, copy_program
+from tools.first_launch_visual import ai_labels_visible, changed_fraction, copy_program
 
 
 with TemporaryDirectory() as temp:
@@ -37,4 +37,12 @@ black = Image.new("RGB", (100, 100), "black")
 white = Image.new("RGB", (100, 100), "white")
 assert changed_fraction(black, black) == 0
 assert changed_fraction(black, white) == 1
+assert not ai_labels_visible(white)
+with_labels = Image.new("RGB", (1320, 1000), "white")
+for x0, y0, x1, y1 in ((35, 220, 118, 270), (35, 285, 118, 340),
+                       (35, 365, 118, 400), (35, 430, 118, 470)):
+    for x in range(x0, x0 + 10):
+        for y in range(y0, y0 + 10):
+            with_labels.putpixel((x, y), (0, 0, 0))
+assert ai_labels_visible(with_labels)
 print("隔离复制、个人数据拦截和画面对比：通过")

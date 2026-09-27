@@ -677,7 +677,13 @@ class CourseMateGUI:
         ttk.Label(tab, text="关闭后遇到弹题只会暂停并提醒你，不会自动作答",
                   style="Hint.TLabel").grid(row=1, column=0, columnspan=4, sticky="w", pady=(0, 10))
 
-        ttk.Label(tab, text="服务商").grid(row=2, column=0, sticky="w")
+        # 打包版在本机漏绘这些 ttk 字段名，改用 Tk 文本标签。
+        self.answer_field_labels = []
+        field_bg = ttk.Style().lookup("TFrame", "background")
+        for title, row in (("服务商", 2), ("模型", 4), ("API Key", 6), ("接口地址", 8)):
+            label = tk.Label(tab, text=title, font=FONT, fg="#000000", bg=field_bg)
+            label.grid(row=row, column=0, sticky="w", pady=(8, 0) if row > 2 else 0)
+            self.answer_field_labels.append(label)
         self.provider_var = tk.StringVar(value=providers.get("deepseek").label)
         self.provider_box = ttk.Combobox(tab, textvariable=self.provider_var,
                                          state="readonly",
@@ -689,7 +695,6 @@ class CourseMateGUI:
         self.provider_note = ttk.Label(tab, text="", style="Hint.TLabel")
         self.provider_note.grid(row=3, column=1, columnspan=3, sticky="w", padx=(8, 0))
 
-        ttk.Label(tab, text="模型").grid(row=4, column=0, sticky="w", pady=(8, 0))
         model_row = ttk.Frame(tab)
         model_row.grid(row=4, column=1, columnspan=3, sticky="ew", padx=(8, 0), pady=(8, 0))
         model_row.columnconfigure(0, weight=1)
@@ -704,7 +709,6 @@ class CourseMateGUI:
                             "才是这家此刻真实提供的型号。也可以直接手输",
                   style="Hint.TLabel").grid(row=5, column=0, columnspan=4, sticky="w")
 
-        ttk.Label(tab, text="API Key").grid(row=6, column=0, sticky="w", pady=(8, 0))
         self.api_key_var = tk.StringVar()
         self.api_key_entry = ttk.Entry(tab, textvariable=self.api_key_var, show="●")
         self.api_key_entry.grid(row=6, column=1, columnspan=2, sticky="ew",
@@ -716,7 +720,6 @@ class CourseMateGUI:
         ttk.Label(tab, text="不填也能播放；视频弹题可按选项重试，独立章节测验不会乱猜",
                   style="Hint.TLabel").grid(row=7, column=0, columnspan=4, sticky="w")
 
-        ttk.Label(tab, text="接口地址").grid(row=8, column=0, sticky="w", pady=(8, 0))
         self.base_url_var = tk.StringVar()
         self.base_url_entry = ttk.Entry(tab, textvariable=self.base_url_var)
         self.base_url_entry.grid(row=8, column=1, columnspan=3, sticky="ew",
@@ -1289,7 +1292,7 @@ class CourseMateGUI:
         """真正换字体。
 
         ttk 控件的字体走 Style，改 Style 就能一次性影响全部；
-        但 tk.Text（日志区）和 Entry 不吃 Style，得单独设。
+        但 tk.Text、tk.Label 和 Entry 不吃 Style，得单独设。
         """
         size = int(round(self.font_size_var.get()))
         self.font_size_label.configure(text=str(size))
@@ -1310,6 +1313,8 @@ class CourseMateGUI:
         style.configure("NavItemOn.TLabel", font=(family, size, "bold"),
                         foreground="#0b5cad", background="#e5eefa")
         style.configure(READONLY_COMBO_STYLE, font=(family, size))
+        for label in self.answer_field_labels:
+            label.configure(font=(family, size))
         try:
             self.log_text.configure(font=("Consolas", max(9, size - 1)))
         except Exception:
@@ -2543,14 +2548,16 @@ def main() -> int:
         windll.shell32.SetCurrentProcessExplicitAppUserModelID("CourseMate.App")
     except Exception:
         pass
-    root = tk.Tk()
     try:
-        # 高 DPI 屏幕下不做这一步，界面会糊
         from ctypes import windll
 
         windll.shcore.SetProcessDpiAwareness(1)
     except Exception:
         pass
+    root = tk.Tk()
+    if os.name == "nt":
+        # 保持原有字号；DPI 感知先于 Tk 创建，避免初始化后再改变缩放度量。
+        root.tk.call("tk", "scaling", 4 / 3)
     CourseMateGUI(root)
     root.mainloop()
     return 0

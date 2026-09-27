@@ -150,6 +150,19 @@ def changed_fraction(a: Image.Image, b: Image.Image) -> float:
         delta.width * delta.height)
 
 
+def ai_labels_visible(image: Image.Image) -> bool:
+    # 四个左列字段名不会被输入框覆盖；空白截图曾漏过整列标签。
+    if image.width < 118 or image.height < 470:
+        return False
+    boxes = ((35, 220, 118, 270), (35, 285, 118, 340),
+             (35, 365, 118, 400), (35, 430, 118, 470))
+    for box in boxes:
+        histogram = image.crop(box).convert("L").histogram()
+        if sum(histogram[:110]) < 20:
+            return False
+    return True
+
+
 def copy_program(source: Path, output: Path) -> Path:
     if not (source / "CourseMate.exe").is_file() or not (source / "_internal").is_dir():
         raise ValueError("源目录需要包含 CourseMate.exe 和 _internal/")
@@ -191,6 +204,8 @@ def main() -> int:
                 config.get("course", {}).get("list")):
             raise RuntimeError("测试副本的自动保存配置含有非空个人字段")
     second_dpi, second = capture_round(copy / "CourseMate.exe", output, "second")
+    if not all(ai_labels_visible(images["ai"]) for images in (first, second)):
+        raise RuntimeError("AI 页字段标签未完整显示，首次启动视觉验收失败")
     for images in (first, second):
         if (changed_fraction(images["course"], images["ai"]) < 0.02 or
                 changed_fraction(images["ai"], images["settings"]) < 0.02 or

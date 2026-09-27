@@ -697,6 +697,10 @@ check("调大字号后只读下拉框也跟着变", font_size_of(READONLY_COMBO_
 check("调大字号后导航项也跟着变", font_size_of("NavItem.TLabel") == 21,
       str(ttk.Style().lookup("NavItem.TLabel", "font")))
 check("选中态的导航项也跟着变", font_size_of("NavItemOn.TLabel") == 21)
+check("AI 字段名也跟着字号变化",
+      len(app.answer_field_labels) == 4 and all(
+          tkfont.Font(root=root, font=label.cget("font")).cget("size") == 21
+          for label in app.answer_field_labels))
 app.font_size_var.set(15.0)
 app._apply_font_size()
 root.update_idletasks()
