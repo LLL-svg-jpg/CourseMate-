@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import argparse
+import os
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -202,7 +203,7 @@ def build(
             for path in missing_assets:
                 print(f"  · {path}")
             return 1
-    for name in ("config.example.toml", "README.md"):
+    for name in ("config.example.toml", "README.md", "requirements.txt", "安装依赖.bat"):
         src = ROOT / name
         if src.exists():
             shutil.copy2(src, target / name)
@@ -223,6 +224,28 @@ def build(
     exe = target / f"{APP_NAME}.exe"
     if exe.exists():
         size = exe.stat().st_size / 1024 / 1024
+        if sys.platform == "win32" and not onefile:
+            env = os.environ.copy()
+            env["PYTHONUTF8"] = "1"
+            print("正在运行首次启动相关代码回归测试...")
+            for name in ("test_gui_layout.py", "test_first_launch_visual.py"):
+                result = subprocess.run(
+                    [sys.executable, str(ROOT / "tests" / name)], cwd=ROOT, env=env)
+                if result.returncode:
+                    print(f"{name} 失败，本次构建不可作为已验收版本。")
+                    return result.returncode
+            print("正在隔离副本中进行两次启动与截图对比...")
+            result = subprocess.run(
+                [sys.executable, str(ROOT / "tools" / "first_launch_visual.py"),
+                 "--package-dir", str(target),
+                 "--output-dir", str(work_path / "first-launch-visual")],
+                cwd=ROOT, env=env)
+            if result.returncode:
+                print("首次启动截图或对比失败，本次构建不可作为已验收版本。")
+                return result.returncode
+            print("截图已保存；任务栏与 Alt-Tab 图标仍须人工视觉复核。")
+        elif onefile:
+            print("单文件模式未执行首次启动视觉测试，不可视为视觉验收通过。")
         if update_shortcut:
             point_shortcut_at_exe(exe)
         else:

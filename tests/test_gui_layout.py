@@ -67,6 +67,10 @@ def walk(w, out):
         walk(c, out)
 
 
+missing_config = Path(__file__).with_name("__missing_gui_config_for_font_test__.toml")
+if missing_config.exists():
+    raise RuntimeError("空配置测试目标已存在，拒绝读取现有文件")
+check("首次启动测试不读取现有配置", True)
 root = tk.Tk()
 icon_order = []
 real_set_icon = CourseMateGUI._set_icon
@@ -84,11 +88,10 @@ def record_restore_geometry(self):
 
 
 with patch.object(CourseMateGUI, "_set_icon", record_set_icon), \
-     patch.object(CourseMateGUI, "_restore_geometry", record_restore_geometry):
+     patch.object(CourseMateGUI, "_restore_geometry", record_restore_geometry), \
+     patch("coursemate.gui.CONFIG_PATH", missing_config):
     app = CourseMateGUI(root)
 check("首次绘制前先设置窗口图标", icon_order[:2] == ["icon", "restore"], str(icon_order))
-missing_config = Path(__file__).with_name("__missing_gui_config_for_font_test__.toml")
-check("首次启动测试不读取现有配置", not missing_config.exists())
 app.font_size_var.set(15.0)
 app.provider_box.configure(font="TkDefaultFont")
 with patch("coursemate.gui.CONFIG_PATH", missing_config):
@@ -105,6 +108,20 @@ with patch("coursemate.gui.CONFIG_PATH", invalid_config), \
 invalid_run_font = tkfont.Font(font=app.provider_box.cget("font")).actual("size")
 check("配置损坏时也应用默认字号到下拉框", invalid_run_font == 15,
       f"实际字号 {invalid_run_font}")
+with patch.object(CourseMateGUI, "_dependency_version", return_value="1.0"), \
+     patch("coursemate.gui.messagebox.showinfo") as info:
+    app._show_deps()
+    check("依赖齐全时不提示安装", "安装依赖.bat" not in info.call_args.args[1])
+with patch.object(CourseMateGUI, "_dependency_version",
+                  side_effect=lambda mod: "" if mod == "playwright" else "1.0"), \
+     patch("coursemate.gui.is_frozen", return_value=True), \
+     patch("coursemate.gui.messagebox.showinfo") as info:
+    app._show_deps()
+    check("打包版缺依赖时说明安装脚本不能修复 EXE",
+          "不能修复 EXE" in info.call_args.args[1])
+with patch("coursemate.gui.is_frozen", return_value=False):
+    check("源码版才建议运行安装脚本",
+          "python -m pip install -r requirements.txt" in app._dependency_repair_hint())
 root.geometry("1100x820")
 root.update_idletasks()
 root.update()
@@ -166,6 +183,13 @@ check("分类不是折叠条（都有实际内容）",
       all(p.winfo_children() for p in app.setting_pages.values()))
 check("Collapsible 类已移除",
       not hasattr(sys.modules["coursemate.gui"], "Collapsible"))
+about_widgets = []
+walk(app.setting_pages["关于"], about_widgets)
+about_text = [widget.cget("text") for widget in about_widgets
+              if isinstance(widget, ttk.Label)]
+check("关于页显示作者", "作者：LLL-svg-jpg" in about_text)
+check("关于页显示项目地址",
+      "项目地址：https://github.com/LLL-svg-jpg/CourseMate-" in about_text)
 
 # --- 没有控件叠在一起 ---
 print("\n== 控件不重叠 ==")
@@ -225,6 +249,14 @@ for name in SECTIONS:
     ok = ([n for n, p in app.setting_pages.items() if p.winfo_ismapped()] == [name]
           and app.nav_items[name]["bar"].winfo_ismapped())
     check(f"切到「{name}」正常", ok)
+    if name == "关于":
+        about_widgets = []
+        walk(app.setting_pages["关于"], about_widgets)
+        check("关于页保留依赖检查按钮",
+              any(isinstance(widget, ttk.Button) and
+                  widget.cget("text") == "检查运行依赖" and
+                  widget.winfo_ismapped() and widget.winfo_width() > 20
+                  for widget in about_widgets))
 
 app._show_section("界面")
 root.update_idletasks()

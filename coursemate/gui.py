@@ -25,7 +25,7 @@ from tkinter import filedialog, messagebox, ttk
 from .config import SPEED_MAX, SPEED_MAX_UNLOCKED, SPEED_MIN, Config, ConfigError
 from .config_writer import save_config
 from .logger import Logger
-from .paths import app_dir, resource
+from .paths import app_dir, is_frozen, resource
 from . import providers
 
 APP_NAME = "CourseMate 刷课助手"
@@ -992,12 +992,16 @@ class CourseMateGUI:
 
         ttk.Label(box, text=f"CourseMate  v{__version__}").grid(
             row=0, column=0, columnspan=3, sticky="w")
+        ttk.Label(box, text="作者：LLL-svg-jpg").grid(
+            row=1, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        ttk.Label(box, text="项目地址：https://github.com/LLL-svg-jpg/CourseMate-").grid(
+            row=2, column=0, columnspan=3, sticky="w", pady=(4, 0))
         self.deps_label = ttk.Label(box, text="", style="Hint.TLabel")
-        self.deps_label.grid(row=1, column=0, columnspan=3, sticky="w", pady=(4, 0))
+        self.deps_label.grid(row=3, column=0, columnspan=3, sticky="w", pady=(4, 0))
         ttk.Button(box, text="检查运行依赖", command=self._show_deps).grid(
-            row=2, column=0, sticky="w", pady=(8, 0))
+            row=4, column=0, sticky="w", pady=(8, 0))
         ttk.Label(box, text="仅供学习研究。是否符合所在平台条款与学校规范，请自行判断",
-                  style="Warn.TLabel").grid(row=3, column=0, columnspan=3,
+                  style="Warn.TLabel").grid(row=5, column=0, columnspan=3,
                                             sticky="w", pady=(8, 0))
 
         self._refresh_settings_info()
@@ -1586,7 +1590,7 @@ class CourseMateGUI:
         try:
             import httpx
         except ImportError:
-            return "缺少 httpx，无法测试。请先运行「安装依赖.bat」。"
+            return "缺少 httpx，无法测试。" + CourseMateGUI._dependency_repair_hint()
         kwargs = {"timeout": 12}
         if proxy:
             kwargs["proxy"] = proxy
@@ -1941,8 +1945,17 @@ class CourseMateGUI:
         except Exception:
             return ""
 
+    @staticmethod
+    def _dependency_repair_hint() -> str:
+        if is_frozen():
+            return ("打包版依赖已内置；若仍报告缺失，请重新下载完整发布包。"
+                    "安装依赖.bat 仅供源码运行，不能修复 EXE。")
+        return ("源码运行缺少依赖时，请运行「安装依赖.bat」，或执行 "
+                "python -m pip install -r requirements.txt。")
+
     def _show_deps(self) -> None:
         rows = []
+        missing = False
         for mod, why in (("playwright", "浏览器驱动，必需"),
                          ("anthropic", "调用 Claude"),
                          ("httpx", "调用国内大模型")):
@@ -1950,14 +1963,16 @@ class CourseMateGUI:
             if version:
                 rows.append(f"  ✓ {mod} {version}  —— {why}")
             else:
+                missing = True
                 rows.append(f"  ✗ {mod} 未安装  —— {why}")
         text = "\n".join(rows)
         self.deps_label.configure(text=text.replace("  ", "").replace("\n", "   "))
         if self.answer_enabled_var.get():
             key_state = "已填写" if self.api_key_var.get().strip() else "未填写（无法实际调用）"
             text += f"\n\n当前 AI：{providers.get(self.vendor_key()).label}\nAPI Key：{key_state}"
-        messagebox.showinfo("运行依赖", text +
-                            "\n\n缺少必需项时可运行「安装依赖.bat」。", parent=self.root)
+        if missing:
+            text += "\n\n" + self._dependency_repair_hint()
+        messagebox.showinfo("运行依赖", text, parent=self.root)
 
     def _refresh_settings_info(self) -> None:
         """刷新设置页上的动态信息。"""
@@ -2162,8 +2177,7 @@ class CourseMateGUI:
             messagebox.showerror(
                 "缺少必需依赖",
                 "无法启动，缺少：\n\n" + "\n".join(f"  · {m}" for m in blocking)
-                + "\n\n请双击「安装依赖.bat」，或在命令行执行：\n"
-                "pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple",
+                + "\n\n" + self._dependency_repair_hint(),
                 parent=self.root,
             )
             return

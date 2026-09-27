@@ -3,6 +3,16 @@ chcp 65001 >nul
 cd /d "%~dp0"
 title CourseMate 安装依赖
 
+if exist "CourseMate.exe" (
+    echo.
+    echo   此脚本只供源码运行，不能修复已打包的 CourseMate.exe。
+    echo   EXE 已内置 Python 依赖；若提示缺失，请重新下载完整发布包。
+    echo   未执行任何 pip 安装。
+    echo.
+    pause
+    exit /b 2
+)
+
 echo.
 echo   正在安装 CourseMate 运行依赖...
 echo.

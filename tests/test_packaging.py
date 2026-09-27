@@ -94,6 +94,16 @@ def main() -> int:
         if source.is_file() and packaged.is_file():
             check(f"{name} 与源码一致", source.read_bytes() == packaged.read_bytes())
 
+    print("\n== 安装脚本仅供源码运行 ==")
+    installer = package_dir / "安装依赖.bat"
+    requirements = package_dir / "requirements.txt"
+    check("发布包带有安装脚本和依赖清单", installer.is_file() and requirements.is_file())
+    if installer.is_file():
+        script = installer.read_text(encoding="utf-8")
+        guard = script.find('if exist "CourseMate.exe"')
+        pip = script.find("python -m pip install")
+        check("EXE 同目录先退出，不会执行 pip", 0 <= guard < script.find("exit /b 2") < pip)
+
     print("\n== 快捷方式指向谁 ==")
     if args.expect_shortcut:
         check("根目录有快捷方式", LNK.exists(), str(LNK))
