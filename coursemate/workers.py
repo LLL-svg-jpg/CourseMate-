@@ -266,6 +266,11 @@ async def solve_one_question(
         logger.info("  非选择题，本程序不自动填写，需要你手动处理。")
         return False
 
+    if await adapter.question_already_correct(page, question):
+        logger.info("  平台已判定本题正确，保留现有答案。")
+        await adapter.confirm_and_close(page)
+        return True
+
     # 只有视频弹窗能依据平台对错反馈试错；开启试错时先走选项序列，
     # 独立测验/考试在各自流程里仍只用题库或 AI 答案。
     result = AnswerResult()
@@ -303,9 +308,11 @@ async def solve_one_question(
 
     for index, attempt in enumerate(attempts, 1):
         if not await adapter.detect_question(page):
-            # 弹窗自己消失了，说明上一次尝试其实被判定通过
-            logger.info("  题目已关闭，判定为通过。")
-            return True
+            if await adapter.read_feedback(page) == "correct":
+                logger.info("  题目已关闭，平台判定为通过。")
+                return True
+            logger.warn("  弹窗已关闭，但平台没有给出正确反馈；不记为答对。")
+            return False
 
         logger.info(f"  {describe_attempt(attempt, index, len(attempts))}")
         await adapter.clear_selection(page, question)
@@ -316,6 +323,9 @@ async def solve_one_question(
         # 试错必须真提交，否则拿不到平台的对错反馈
         await adapter.submit_answer(page, auto_submit=True)
         feedback = await adapter.read_feedback(page)
+        if feedback == "unknown" and adapter.retry_without_feedback(question):
+            await asyncio.sleep(1.0)
+            feedback = await adapter.read_feedback(page)
 
         if feedback == "correct":
             logger.info(f"  ✓ 答对了（第 {index} 次尝试）。")
@@ -334,6 +344,9 @@ async def solve_one_question(
             return True
 
         if feedback == "unknown":
+            if adapter.retry_without_feedback(question):
+                logger.info("  平台尚无判题反馈，继续有限次候选尝试；未记为答对。")
+                continue
             logger.warn("  无法判断对错，停止尝试以免乱点。请留意这道题。")
             return False
 

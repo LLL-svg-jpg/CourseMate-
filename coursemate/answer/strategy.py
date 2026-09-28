@@ -57,6 +57,9 @@ def build_attempts(question: Question, ai_keys: list[str] | None = None) -> list
             for k in keys:
                 if k not in ai:
                     attempts.append(sorted(ai + [k], key=keys.index))
+        if len(keys) >= 5:
+            # 五项以上时全选会落在次数上限外，先保留这个候选。
+            attempts.append(list(keys))
         # 剩余组合按选中个数展开。多选题很少只选一个，所以从 2 个起
         for size in range(2, len(keys) + 1):
             for combo in combinations(keys, size):

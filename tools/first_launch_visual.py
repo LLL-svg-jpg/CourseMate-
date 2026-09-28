@@ -102,6 +102,11 @@ def capture_round(exe: Path, output: Path, label: str) -> tuple[int, dict[str, I
             activate(hwnd)
             time.sleep(0.2)
             image = ImageGrab.grab(bbox=(rect.left, rect.top, rect.right, rect.bottom))
+            if name == "ai" and not ai_labels_visible(image):
+                click(rect.left + tab_x, rect.top + 120)
+                activate(hwnd)
+                time.sleep(0.2)
+                image = ImageGrab.grab(bbox=(rect.left, rect.top, rect.right, rect.bottom))
             image.save(output / f"{label}_{name}.png")
             images[name] = image
         click(rect.left + 70, rect.top + 485)

@@ -136,14 +136,21 @@ class PlatformAdapter(ABC):
         """
         return None
 
+    async def question_already_correct(self, page: Page, question: Question) -> bool:
+        """当前视频弹题是否已被平台判为正确。"""
+        return False
+
     async def read_feedback(self, page: Page) -> str:
         """读取平台对本次作答的判定。
 
         返回 "correct" / "wrong" / "unknown"。
-        返回 unknown 时调用方会停止试错——判不出对错还继续点，
-        就等于在乱点，不如交还人工。
+        默认在 unknown 时停止试错；特定视频多选页可允许有限次重试。
         """
         return "unknown"
+
+    def retry_without_feedback(self, question: Question) -> bool:
+        """平台尚无判题反馈时，是否允许继续有限次视频弹题尝试。"""
+        return False
 
     async def confirm_and_close(self, page: Page) -> bool:
         """答对之后点确认/继续，让视频接着播。返回是否成功。"""

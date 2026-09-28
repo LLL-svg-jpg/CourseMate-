@@ -429,17 +429,42 @@ app.font_size_var.set(15.0)
 app._apply_font_size()
 root.update_idletasks()
 
-leftover = []
+selected_combos = []
 for cb in all_combos:
     cb.selection_range(0, "end")
     if not cb.selection_present():
         continue                       # 禁用态的框选不上，跳过
+    selected_combos.append(cb)
     cb.event_generate("<<ComboboxSelected>>")
     root.update()
-    if cb.selection_present():
-        leftover.append(str(cb))
+root.after(60, root.quit)
+root.mainloop()
+leftover = [str(cb) for cb in selected_combos if cb.selection_present()]
 check("选完模型/服务商后不留蓝底（不用再点一下）", not leftover,
       f"{len(leftover)} 个仍是选中态: {leftover[:3]}")
+
+print("\n== 服务商密钥与真实焦点 ==")
+app.provider_box.focus_set()
+app.provider_box.selection_range(0, "end")
+app.provider_var.set("智谱 GLM")
+app.provider_box.event_generate("<<ComboboxSelected>>")
+root.after(60, root.quit)
+root.mainloop()
+check("服务商选定后焦点离开下拉框", root.focus_get() is not app.provider_box)
+check("服务商选定后清掉文本选区", not app.provider_box.selection_present())
+app.api_key_var.set("fake-zhipu-key")
+app.provider_var.set("DeepSeek 深度求索")
+app.provider_box.event_generate("<<ComboboxSelected>>")
+root.update()
+check("切到未填密钥的服务商显示空白", app.api_key_var.get() == "")
+app.api_key_var.set("fake-deepseek-key")
+app.provider_var.set("智谱 GLM")
+app.provider_box.event_generate("<<ComboboxSelected>>")
+root.update()
+check("切回服务商恢复其密钥", app.api_key_var.get() == "fake-zhipu-key")
+check("收集配置时保留多个服务商密钥", app._collect()["api_keys"] == {
+    "zhipu": "fake-zhipu-key", "deepseek": "fake-deepseek-key",
+})
 
 # --- 切页/Tab 时输入框不该整条泛蓝 ---
 print("\n== 焦点转移不该全选 ==")

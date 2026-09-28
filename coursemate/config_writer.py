@@ -69,6 +69,10 @@ timeout = {timeout}
 # 本地题库缓存。同门课题目高度重复，开启后 AI 调用量大幅下降
 cache = {cache}
 
+# 各服务商自己的密钥；切换服务商时只读取对应项。
+[answer.api_keys]
+{api_keys}
+
 [runtime]
 log_level = "{log_level}"
 beep_on_captcha = {beep_on_captcha}
@@ -111,6 +115,17 @@ def dump_config(data: dict[str, Any]) -> str:
     ]
     course_list = "\n".join(blocks) if blocks else ""
     win = data.get("window_size") or (1440, 900)
+    keys = {str(key): str(value).strip() for key, value in
+            (data.get("api_keys") or {}).items() if str(value).strip()}
+    provider = str(data.get("provider", "anthropic"))
+    if "api_key" in data:
+        selected = str(data["api_key"]).strip()
+        if selected:
+            keys[provider] = selected
+        else:
+            keys.pop(provider, None)
+    api_keys = "\n".join(f'"{_esc(key)}" = "{_esc(value)}"'
+                         for key, value in sorted(keys.items()))
     return TEMPLATE.format(
         username=_esc(data.get("username", "")),
         password=_esc(data.get("password", "")),
@@ -132,6 +147,7 @@ def dump_config(data: dict[str, Any]) -> str:
         exam_auto_submit=_bool(data.get("exam_auto_submit", False)),
         provider=_esc(data.get("provider", "anthropic")),
         api_key=_esc(data.get("api_key", "")),
+        api_keys=api_keys,
         model=_esc(data.get("model", "claude-opus-5")),
         base_url=_esc(data.get("base_url", "")),
         timeout=float(data.get("timeout", 45)),

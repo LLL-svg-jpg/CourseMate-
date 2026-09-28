@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from coursemate.answer.base import AnswerResult
 from coursemate.platforms.zhihuishu import ZhihuishuAdapter
 from coursemate.platforms.base import Lesson
-from coursemate.runner import study_course
+from coursemate.runner import StopRequested, study_course
 from coursemate.events import StudyClock
 from coursemate.workers import solve_one_question
 from coursemate.zhihuishu_work import extract_questions, is_work_url, study_work
@@ -28,6 +28,14 @@ class Provider:
 class Cache:
     def get(self, question):
         return None
+
+
+class RecordingCache(Cache):
+    def __init__(self):
+        self.verified = []
+
+    def put(self, question, result):
+        self.verified.append(result.option_keys)
 
 
 class ChapterOnlyAdapter:
@@ -48,11 +56,39 @@ class ChapterOnlyAdapter:
     async def active_lesson_key(self, page):
         return ""
 
+    async def detect_question(self, page):
+        return False
+
     async def enter_lesson(self, page, lesson):
         return True
 
     async def process_chapter_test(self, page, provider, cache, use_cache, auto_submit, should_stop):
         self.calls += 1
+        return True
+
+
+class StopOnChapterAdapter(ChapterOnlyAdapter):
+    def __init__(self):
+        super().__init__()
+        self.stopped = False
+
+    async def enter_lesson(self, page, lesson):
+        self.stopped = True
+        return True
+
+
+class PopupBlockingAdapter(ChapterOnlyAdapter):
+    def __init__(self):
+        super().__init__()
+        self.popup_open = True
+        self.enter_calls = 0
+
+    async def detect_question(self, page):
+        return self.popup_open
+
+    async def enter_lesson(self, page, lesson):
+        assert not self.popup_open
+        self.enter_calls += 1
         return True
 
 
@@ -135,13 +171,87 @@ TRIAL_POPUP_HTML = """<div id="playTopic-dialog">
 <button class="submit-btn" onclick="submit()">提交</button></div>
 <script>
 window.trials = [];
-function choose(button) { button.classList.toggle('active'); }
+function choose(button) {
+  document.querySelectorAll('.topic-item').forEach(node => node.classList.remove('active'));
+  button.classList.add('active');
+}
 function submit() {
   const choice = document.querySelector('.topic-item.active');
   window.trials.push(choice?.textContent || '');
   if (choice?.textContent.startsWith('B'))
     document.querySelector('#playTopic-dialog').remove();
   else choice?.classList.add('wrong');
+}
+</script>"""
+
+MULTI_POPUP_HTML = """<div id="playTopic-dialog"><div class="el-dialog">
+<div class="el-pager"><li class="number">1</li></div>
+<p class="topic-title"><span class="title-tit">【多选题】</span>模拟多选</p>
+<ul class="topic-list">
+  <li class="topic-item" onclick="choose(this)"><span class="topic-option-item">A.</span><div>甲</div></li>
+  <li class="topic-item" onclick="choose(this)"><span class="topic-option-item">B.</span><div>乙</div></li>
+  <li class="topic-item" onclick="choose(this)"><span class="topic-option-item">C.</span><div>丙</div></li>
+  <li class="topic-item" onclick="choose(this)"><span class="topic-option-item">D.</span><div>丁</div></li>
+</ul>
+<div class="dialog-footer"><div class="btn" onclick="closePopup()">关闭</div></div>
+</div></div>
+<script>
+window.trials = [];
+window.silentWrong = false;
+function choose(node) {
+  node.querySelector('.topic-option-item').classList.toggle('active');
+  const selected = [...document.querySelectorAll('.topic-option-item.active')]
+    .map(el => el.textContent.trim()[0]).join('');
+  document.querySelectorAll('.topic-title .error,.topic-title .right,.answer')
+    .forEach(el => el.remove());
+  if (selected.length >= 2) {
+    window.trials.push(selected);
+    if (window.silentWrong && selected !== window.correct) return;
+    document.querySelector('.topic-title').insertAdjacentHTML('afterbegin',
+      selected === window.correct ? '<span class="right">正确</span>' :
+      '<span class="error">错误</span>');
+    if (selected !== window.correct) document.querySelector('.topic-list')
+      .insertAdjacentHTML('afterend', `<p class="answer">正确答案：<span>${window.correct.split('').join(',')}</span></p>`);
+  }
+}
+function closePopup() {
+  if (document.querySelectorAll('.topic-option-item.active').length >= 2)
+    document.querySelector('#playTopic-dialog').remove();
+}
+window.correct = 'AC';
+</script>"""
+
+LIVE_SHAPED_POPUP_HTML = """<div id="playTopic-dialog">
+<div class="el-dialog">
+  <button class="close-btn" onclick="closePopup()">关闭</button>
+  <div class="el-pager"><button class="number">1</button></div>
+  <p class="topic-title"><span class="title-tit">【单选题】</span>模拟题目</p>
+  <ul>
+    <li class="topic-item" onclick="choose(0)"><span class="topic-option-item">A.</span><div class="item-topic">甲</div></li>
+    <li class="topic-item" onclick="choose(1)"><span class="topic-option-item">B.</span><div class="item-topic">乙</div></li>
+  </ul>
+  <div class="feedback"><div class="answer-zq"></div></div>
+  <span class="dialog-footer"><div class="btn" onclick="closePopup()">关闭</div></span>
+</div></div>
+<script>
+window.picks = [];
+window.warningShown = false;
+function choose(i) {
+  window.picks.push(i);
+  document.querySelectorAll('.topic-item').forEach((node, index) => {
+    node.querySelector('.topic-option-item').classList.toggle('active', index === i);
+    node.querySelector('.item-topic').classList.toggle('active', index === i);
+  });
+  const target = document.querySelector(window.gradeTarget);
+  target.querySelector('.grade')?.remove();
+  target.insertAdjacentHTML('afterbegin',
+    `<span class="grade ${window.gradeClass} ${i ? 'right' : 'error'}">${i ? '正确' : '错误'}</span>`);
+}
+function closePopup() {
+  if (!window.picks.length && !document.querySelector('.right')) {
+    window.warningShown = true; return;
+  }
+  document.querySelector('#playTopic-dialog').remove();
 }
 </script>"""
 
@@ -163,9 +273,100 @@ async def main() -> None:
                                      auto_submit=False, limit_max_minutes=0),
                      None, Cache(), lambda: False), timeout=3)
     assert chapter.calls == 1
+    stopped_chapter = StopOnChapterAdapter()
+    try:
+        await study_course(object(), stopped_chapter, "https://example.test", StudyClock(),
+                           SimpleNamespace(answer_enabled=True, answer_cache=False,
+                                           auto_submit=False, limit_max_minutes=0),
+                           None, Cache(), lambda: stopped_chapter.stopped)
+    except StopRequested:
+        pass
+    else:
+        raise AssertionError("停止后仍进入平时测试")
+    assert stopped_chapter.calls == 0
+    blocked = PopupBlockingAdapter()
+    blocked_task = asyncio.create_task(study_course(
+        object(), blocked, "https://example.test", StudyClock(),
+        SimpleNamespace(answer_enabled=False, answer_cache=False,
+                        auto_submit=False, limit_max_minutes=0),
+        None, Cache(), lambda: False))
+    await asyncio.sleep(0.1)
+    assert blocked.enter_calls == 0
+    blocked.popup_open = False
+    assert not await asyncio.wait_for(blocked_task, timeout=3)
+    assert blocked.enter_calls == 1
+    blocked = PopupBlockingAdapter()
+    stop = False
+    blocked_task = asyncio.create_task(study_course(
+        object(), blocked, "https://example.test", StudyClock(),
+        SimpleNamespace(answer_enabled=False, answer_cache=False,
+                        auto_submit=False, limit_max_minutes=0),
+        None, Cache(), lambda: stop))
+    await asyncio.sleep(0.1)
+    stop = True
+    try:
+        await asyncio.wait_for(blocked_task, timeout=3)
+    except StopRequested:
+        pass
+    else:
+        raise AssertionError("等待视频弹题时未及时停止")
+    assert blocked.enter_calls == 0
     async with async_playwright() as playwright:
         browser = await playwright.chromium.launch(channel="msedge", headless=True)
         try:
+            page = await browser.new_page()
+            await page.set_content("""<label class="el-checkbox privacy-checkbox">
+                <input type="checkbox" style="width:0;height:0">同意协议</label>""")
+            assert await adapter._accept_login_agreement(page)
+            assert await page.locator(".privacy-checkbox input").is_checked()
+            assert await adapter._accept_login_agreement(page)
+            assert await page.locator(".privacy-checkbox input").is_checked()
+
+            await page.set_content("""<div class="dialog"><div class="dialog-read">
+                <i class="iconfont iconguanbi" style="display:inline-block;width:18px;height:18px"
+                   onclick="this.closest('.dialog').remove()"></i>
+                学前必读</div></div>""")
+            await adapter.prepare_page(page)
+            assert not await page.locator(".dialog").count()
+            adapter.is_shared = False
+            await page.set_content("""<style>
+                .courseRemind.khfaPop { position:fixed; inset:0; z-index:2003; }
+                .courseRemind.khfaPop .el-icon-error {
+                    position:absolute; right:20px; top:20px; width:20px; height:20px;
+                }
+                .wxtsPop { position:fixed; inset:0; z-index:4000; }
+                </style><div class="courseRemind courseRemindAd" style="display:none">
+                <div class="header-slot"><i class="el-icon-error"></i></div></div>
+                <div class="courseRemind khfaPop"><div class="header-slot">学前必读</div>
+                   <div class="header-slot" style="width:110px;height:28px">
+                   <i class="el-icon-error" onclick="this.closest('.courseRemind').remove()"></i></div></div>
+                <div class="wxtsPop"><button class="btn primary"
+                   onclick="this.closest('.wxtsPop').remove()">我知道了</button></div>""")
+            await adapter.prepare_page(page)
+            assert not await page.locator(".courseRemind.khfaPop, .wxtsPop").count()
+            assert await page.locator(".courseRemind.courseRemindAd").count() == 1
+            await page.set_content("""<div class="wxtsPop"><button class="btn primary"
+                onclick="this.closest('.wxtsPop').remove()">我知道了</button></div>""")
+            await adapter.prepare_page(page)
+            assert await page.locator(".wxtsPop").count() == 1
+            late_adapter = ZhihuishuAdapter()
+            late_adapter.is_shared = False
+            await page.set_content("""<style>
+                .courseRemind.khfaPop { position:fixed; inset:0; z-index:2003; }
+                .el-icon-error { position:absolute; right:20px; top:20px;
+                    width:20px; height:20px; }
+                </style><button class="chapter-test" onclick="window.chapterClicked=true">平时测试</button>""")
+            await late_adapter.prepare_page(page)
+            await page.evaluate("""() => document.body.insertAdjacentHTML('beforeend',
+                `<div class="courseRemind khfaPop"><div class="header-slot">学前必读</div>
+                <i class="el-icon-error" onclick="this.closest('.courseRemind').remove()"></i></div>`)""")
+            assert await late_adapter.enter_lesson(
+                page, Lesson("平时测试", page.locator(".chapter-test"), kind="chapter")
+            )
+            assert await page.evaluate("window.chapterClicked") is True
+            assert not await page.locator(".courseRemind.khfaPop").count()
+            adapter.is_shared = True
+
             page = await browser.new_page()
             await page.set_content(COURSE_HTML)
             lessons = await adapter.list_lessons(page)
@@ -242,6 +443,7 @@ async def main() -> None:
 
             await page.goto("about:blank")
             await page.set_content(TRIAL_POPUP_HTML)
+            adapter.is_shared = False
             trial_question = (await adapter.extract_questions(page))[0]
 
             class NoAiForPopup:
@@ -255,6 +457,133 @@ async def main() -> None:
                 trial_question, NoAiForPopup(), Cache())
             assert await page.evaluate("window.trials") == ["A. 错误", "B. 正确"]
 
+            adapter.is_shared = True
+            await page.set_content(MULTI_POPUP_HTML)
+            multi_question = (await adapter.extract_questions(page))[0]
+            assert multi_question.qtype == "multiple"
+            assert await solve_one_question(
+                page, adapter,
+                SimpleNamespace(answer_cache=False, retry_until_correct=True,
+                                auto_submit=False),
+                multi_question, NoAiForPopup(), Cache(),
+            )
+            assert (await page.evaluate("window.trials"))[:2] == ["AB", "AC"]
+            assert not await adapter.detect_question(page)
+
+            await page.set_content(MULTI_POPUP_HTML)
+            await page.evaluate("window.silentWrong = true")
+            silent_question = (await adapter.extract_questions(page))[0]
+            assert await solve_one_question(
+                page, adapter,
+                SimpleNamespace(answer_cache=False, retry_until_correct=True,
+                                auto_submit=False),
+                silent_question, NoAiForPopup(), Cache(),
+            )
+            assert (await page.evaluate("window.trials"))[:2] == ["AB", "AC"]
+            assert not await adapter.detect_question(page)
+
+            await page.set_content(MULTI_POPUP_HTML)
+            await page.evaluate("""() => {
+                window.correct = 'ABCDE';
+                window.silentWrong = true;
+                const list = document.querySelector('.topic-list');
+                list.style.cssText = 'max-height:80px;overflow-y:auto';
+                list.insertAdjacentHTML('beforeend',
+                    '<li class="topic-item" onclick="choose(this)">' +
+                    '<span class="topic-option-item">E.</span><div>戊</div></li>');
+            }""")
+            five_question = (await adapter.extract_questions(page))[0]
+            assert len(five_question.options) == 5
+            five_cache = RecordingCache()
+            assert await solve_one_question(
+                page, adapter,
+                SimpleNamespace(answer_cache=True, retry_until_correct=True,
+                                auto_submit=False),
+                five_question, NoAiForPopup(), five_cache,
+            )
+            assert (await page.evaluate("window.trials"))[-1] == "ABCDE"
+            assert five_cache.verified == [list("ABCDE")]
+            assert not await adapter.detect_question(page)
+
+            await page.set_content(MULTI_POPUP_HTML)
+            await page.evaluate("window.correct = 'ABC'")
+            await page.locator(".topic-item").nth(3).evaluate("el => el.remove()")
+            three_choice = (await adapter.extract_questions(page))[0]
+            cache = RecordingCache()
+            assert await solve_one_question(
+                page, adapter,
+                SimpleNamespace(answer_cache=True, retry_until_correct=True,
+                                auto_submit=False),
+                three_choice, NoAiForPopup(), cache,
+            )
+            trials = await page.evaluate("window.trials")
+            assert trials[:3] == ["AB", "AC", "BC"] and trials[-1] == "ABC"
+            assert cache.verified == [["A", "B", "C"]]
+            assert not await adapter.detect_question(page)
+
+            await page.set_content(MULTI_POPUP_HTML)
+            await page.evaluate("window.correct = 'ABC'")
+            await page.locator(".topic-item").nth(3).evaluate("el => el.remove()")
+            closed_wrong = (await adapter.extract_questions(page))[0]
+            await page.locator(".topic-item").nth(0).click()
+            await page.locator(".topic-item").nth(1).click()
+            assert await adapter.read_feedback(page) == "wrong"
+            await page.locator(".dialog-footer .btn").click()
+            assert not await adapter.detect_question(page)
+            assert await adapter.read_feedback(page) == "unknown"
+            assert not await solve_one_question(
+                page, adapter,
+                SimpleNamespace(answer_cache=False, retry_until_correct=True,
+                                auto_submit=False),
+                closed_wrong, NoAiForPopup(), Cache(),
+            )
+
+            for shared, target, grade_class in (
+                (True, ".topic-title", ""),
+                (False, ".answer-zq", ""),
+            ):
+                live_adapter = ZhihuishuAdapter()
+                live_adapter.is_shared = shared
+                await page.set_content(LIVE_SHAPED_POPUP_HTML)
+                await page.evaluate(
+                    "([target, cls]) => { window.gradeTarget = target; window.gradeClass = cls; }",
+                    [target, grade_class],
+                )
+                if not shared:
+                    await page.locator(".dialog-footer").evaluate("el => el.style.display = 'none'")
+                assert await live_adapter.detect_question(page)
+                assert await live_adapter.read_feedback(page) == "unknown"
+                await live_adapter.close_question(page)
+                assert await live_adapter.detect_question(page)
+                assert not await page.evaluate("window.warningShown")
+                await page.evaluate("choose(0); window.picks = []")
+                question = (await live_adapter.extract_questions(page))[0]
+                assert question.stem == "模拟题目"
+                assert await solve_one_question(
+                    page, live_adapter,
+                    SimpleNamespace(answer_cache=False, retry_until_correct=True,
+                                    auto_submit=False),
+                    question, NoAiForPopup(), Cache(),
+                )
+                assert await page.evaluate("window.picks") == [0, 1]
+                assert not await live_adapter.detect_question(page)
+
+                await page.set_content(LIVE_SHAPED_POPUP_HTML)
+                await page.evaluate(
+                    "([target, cls]) => { window.gradeTarget = target; window.gradeClass = cls; "
+                    "choose(1); window.picks = []; }",
+                    [target, grade_class],
+                )
+                already_right = (await live_adapter.extract_questions(page))[0]
+                assert await solve_one_question(
+                    page, live_adapter,
+                    SimpleNamespace(answer_cache=False, retry_until_correct=True,
+                                    auto_submit=False),
+                    already_right, NoAiForPopup(), Cache(),
+                )
+                assert await page.evaluate("window.picks") == []
+                assert not await live_adapter.detect_question(page)
+
             page = await browser.new_page()
             await page.set_content(WORK_HTML)
             questions = await extract_questions(page, capture_image=False)
@@ -265,6 +594,44 @@ async def main() -> None:
             assert await page.evaluate("window.submitted || false") is False
             assert (await extract_questions(page, capture_image=False))[0].stem == "单选题二"
             assert await page.locator(".nodeLab input:checked").count() == 1
+
+            class StopProvider:
+                async def solve(self, question):
+                    self.stopped = True
+                    return AnswerResult(option_keys=["A", "C"], source="test")
+
+            page = await browser.new_page()
+            await page.set_content(WORK_HTML)
+            stop_provider = StopProvider()
+            stop_provider.stopped = False
+            assert not await study_work(page, stop_provider, Cache(), False, True,
+                                        lambda: stop_provider.stopped)
+            assert await page.evaluate("window.saved.length") == 0
+            assert not await page.evaluate("window.submitted || false")
+
+            class SlowProvider:
+                def __init__(self):
+                    self.started = asyncio.Event()
+                    self.cancelled = False
+
+                async def solve(self, question):
+                    try:
+                        self.started.set()
+                        await asyncio.Event().wait()
+                    finally:
+                        self.cancelled = True
+
+            page = await browser.new_page()
+            await page.set_content(WORK_HTML)
+            slow_provider = SlowProvider()
+            stop = asyncio.Event()
+            task = asyncio.create_task(study_work(page, slow_provider, Cache(), False,
+                                                  True, stop.is_set))
+            await asyncio.wait_for(slow_provider.started.wait(), timeout=2)
+            stop.set()
+            assert not await asyncio.wait_for(task, timeout=1)
+            assert slow_provider.cancelled
+            assert not await page.evaluate("window.submitted || false")
 
             page = await browser.new_page()
             await page.set_content(WORK_HTML)

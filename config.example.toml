@@ -53,6 +53,9 @@ timeout = 45
 # 是否启用本地题库缓存。同门课题目高度重复，开启后 AI 调用量大幅下降
 cache = true
 
+# 图形界面会在这里分别保存各服务商的密钥；仅写入本机 config.toml。
+[answer.api_keys]
+
 [runtime]
 # 日志级别 DEBUG / INFO / WARN / ERROR
 log_level = "INFO"

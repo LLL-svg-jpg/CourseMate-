@@ -284,8 +284,20 @@ class Config:
         return str(self._get("answer", "provider", "anthropic")).strip().lower()
 
     @property
+    def api_keys(self) -> dict[str, str]:
+        saved = self._get("answer", "api_keys", None)
+        keys = {}
+        if isinstance(saved, dict):
+            keys = {str(key): str(value).strip() for key, value in saved.items()
+                    if str(value).strip()}
+        legacy = str(self._get("answer", "api_key", "")).strip()
+        if legacy and self.answer_provider not in keys:
+            keys[self.answer_provider] = legacy
+        return keys
+
+    @property
     def api_key(self) -> str:
-        key = str(self._get("answer", "api_key", "")).strip()
+        key = self.api_keys.get(self.answer_provider, "")
         if key:
             return key
         # 配置留空时回落到环境变量，避免把密钥写进文件

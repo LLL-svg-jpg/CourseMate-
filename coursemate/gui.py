@@ -416,6 +416,8 @@ class CourseMateGUI:
         self._normal_geometry = ""
         # 跨标签页共用的变量在这里先建好，避免依赖标签页的构建顺序
         self.cache_var = tk.BooleanVar(value=True)
+        self._provider_keys: dict[str, str] = {}
+        self._active_provider_key = "deepseek"
 
         root.title(APP_NAME)
         root.minsize(1000, 700)
@@ -1171,6 +1173,9 @@ class CourseMateGUI:
 
     def _on_provider_change(self, _event=None) -> None:
         """切换服务商时自动带出接口地址与常用模型，省得用户去翻文档。"""
+        self._remember_provider_key()
+        self._active_provider_key = self.vendor_key()
+        self.api_key_var.set(self._provider_keys.get(self._active_provider_key, ""))
         prov = providers.get(self.vendor_key())
         self.model_box.configure(values=prov.models)
         # 换了服务商，旧模型名几乎肯定不适用，一律换掉；
@@ -1180,6 +1185,13 @@ class CourseMateGUI:
         self.provider_note.configure(
             text=prov.note, style="Hint.TLabel")
         self._toggle_answer_fields()
+
+    def _remember_provider_key(self) -> None:
+        value = self.api_key_var.get().strip()
+        if value:
+            self._provider_keys[self._active_provider_key] = value
+        else:
+            self._provider_keys.pop(self._active_provider_key, None)
 
     def _check_model_match(self) -> str:
         """检查服务商与模型是否明显不搭。返回提示语，空串表示没问题。
@@ -1555,8 +1567,17 @@ class CourseMateGUI:
                 if child.instate(("readonly",)):
                     child.configure(style=READONLY_COMBO_STYLE)
                 child.bind("<<ComboboxSelected>>",
-                           lambda e: e.widget.after_idle(e.widget.selection_clear), add="+")
+                           lambda e: e.widget.after(20, self._clear_combobox_highlight,
+                                                    e.widget), add="+")
             self._tidy_comboboxes(child)
+
+    def _clear_combobox_highlight(self, widget) -> None:
+        try:
+            if self.root.focus_get() is widget:
+                self.root.focus_set()
+            widget.selection_clear()
+        except tk.TclError:
+            pass
 
     def _update_minsize(self) -> None:
         """字号越大，所有标签页和日志区都必须完整可见。
@@ -1929,6 +1950,8 @@ class CourseMateGUI:
         self.username_var.set("")
         self.password_var.set("")
         self.api_key_var.set("")
+        self._provider_keys.clear()
+        self._active_provider_key = "anthropic"
         self.provider_var.set(providers.get("anthropic").label)
         self.model_var.set("")
         self.base_url_var.set("")
@@ -2036,6 +2059,7 @@ class CourseMateGUI:
     # ---------------- 配置读写 ----------------
 
     def _collect(self) -> dict:
+        self._remember_provider_key()
         items = self.url_list.get_items()
         urls = [i["url"] for i in items]
         try:
@@ -2063,6 +2087,7 @@ class CourseMateGUI:
             "exam_auto_submit": self.exam_auto_submit_var.get(),
             "provider": self.vendor_key(),
             "api_key": self.api_key_var.get().strip(),
+            "api_keys": dict(self._provider_keys),
             "model": self.model_var.get().strip(),
             "base_url": self.base_url_var.get().strip(),
             "timeout": 45,
@@ -2111,12 +2136,13 @@ class CourseMateGUI:
         self.exam_auto_submit_var.set(cfg.exam_auto_submit)
         prov = providers.get(cfg.answer_provider)
         self.provider_var.set(prov.label)
+        self._provider_keys = cfg.api_keys
+        self._active_provider_key = prov.key
         self.model_box.configure(values=prov.models)
         self.provider_note.configure(
             text=prov.note, style="Hint.TLabel")
         # 从配置读 Key 时不要把环境变量里的值回填进输入框，否则一保存就落盘了
-        raw_key = (cfg._raw.get("answer", {}) or {}).get("api_key", "")
-        self.api_key_var.set(str(raw_key))
+        self.api_key_var.set(self._provider_keys.get(prov.key, ""))
         self.model_var.set(cfg.model)
         self.base_url_var.set(cfg.base_url or prov.base_url)
         self.cache_var.set(cfg.answer_cache)

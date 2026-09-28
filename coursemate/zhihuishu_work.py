@@ -116,7 +116,9 @@ async def _save_answer_cards(page: Page, count: int) -> bool:
     return True
 
 
-async def _submit_work(page: Page, label: str) -> None:
+async def _submit_work(page: Page, label: str, should_stop) -> None:
+    if should_stop():
+        return
     before_url = page.url
     button = page.get_by_role("button", name=re.compile(r"^(提交|交卷|提交试卷)$")).first
     if not await button.count() or not await button.is_visible() or not await button.is_enabled():
@@ -126,6 +128,8 @@ async def _submit_work(page: Page, label: str) -> None:
     await asyncio.sleep(0.4)
     dialog = page.locator(".el-message-box__wrapper:visible, .el-dialog__wrapper:visible") \
         .filter(has_text=re.compile(r"提交|交卷")).last
+    if should_stop():
+        return
     if await dialog.count():
         confirm = dialog.get_by_role("button", name=re.compile(r"^(确定|确认|确认提交|提交)$")).first
         if await confirm.count() and await confirm.is_visible():
@@ -163,6 +167,8 @@ async def study_work(page: Page, provider: AnswerProvider | None, cache: AnswerC
             break
         seen.add(signature)
         for question in questions:
+            if should_stop():
+                return False
             total += 1
             if question.selected_keys:
                 answered += 1
@@ -173,7 +179,19 @@ async def study_work(page: Page, provider: AnswerProvider | None, cache: AnswerC
                 continue
             result = cache.get(question) if use_cache else None
             if result is None and provider:
-                result = await provider.solve(question)
+                solve_task = asyncio.create_task(provider.solve(question))
+                try:
+                    while not solve_task.done():
+                        if should_stop():
+                            return False
+                        await asyncio.wait({solve_task}, timeout=0.25)
+                    result = await solve_task
+                finally:
+                    if not solve_task.done():
+                        solve_task.cancel()
+                        await asyncio.gather(solve_task, return_exceptions=True)
+            if should_stop():
+                return False
             if not isinstance(result, AnswerResult) or result.empty:
                 logger.warn(f"{label}第 {total} 题没有参考答案，留空。")
                 continue
@@ -186,10 +204,14 @@ async def study_work(page: Page, provider: AnswerProvider | None, cache: AnswerC
                 logger.info(f"{label}第 {total} 题已选中：{'+'.join(keys)}")
             else:
                 logger.warn(f"{label}第 {total} 题未能确认页面选中状态，请人工核对。")
+        if should_stop():
+            return False
         next_button = page.locator(NEXT_SEL).first
         if (len(questions) != 1 or not await next_button.count()
                 or not await next_button.is_visible() or not await next_button.is_enabled()):
             save_button = page.get_by_role("button", name=re.compile(r"^(保存|暂存|保存答案)$")).first
+            if should_stop():
+                return False
             if await save_button.count() and await save_button.is_visible() and await save_button.is_enabled():
                 await save_button.click(timeout=3000)
                 final_saved = True
@@ -198,6 +220,8 @@ async def study_work(page: Page, provider: AnswerProvider | None, cache: AnswerC
                 logger.warn("最后一题没有明确保存按钮；页面选中不等于服务器已保存，请人工核对。")
             break
         paged = True
+        if should_stop():
+            return False
         await next_button.click(timeout=3000)  # 共享课逐题页靠“下一题”保存本题
         for _ in range(20):
             if should_stop():
@@ -210,15 +234,19 @@ async def study_work(page: Page, provider: AnswerProvider | None, cache: AnswerC
             logger.warn("点击下一题后题目未变；最后一题是否保存需人工确认。")
             break
     logger.info(f"智慧树{label}本轮查看 {total} 题，确认选中 {answered} 题。", shift=True)
+    if should_stop():
+        return False
     if auto_submit:
         card_count = await page.locator(".answerCard_list ul li").count()
         if not is_exam and paged and not final_saved and answered == total:
             final_saved = await _save_answer_cards(page, total)
+        if should_stop():
+            return False
         if (total == 0 or answered != total or card_count != total
                 or (paged and (is_exam or not final_saved))):
             logger.warn("无法确认整卷题数与已答题数一致，取消自动提交。")
         else:
-            await _submit_work(page, label)
+            await _submit_work(page, label, should_stop)
     else:
         logger.info("未自动交卷/提交，请在网页核对并人工操作。")
     return True

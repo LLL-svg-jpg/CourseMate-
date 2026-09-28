@@ -96,6 +96,8 @@ def test_multiple_order() -> None:
     big = build_attempts(make_q(6, "multiple"), ["A"])
     check("6 选项时被上限夹住", len(big) == MAX_ATTEMPTS, str(len(big)))
     check("每次尝试都非空", all(len(a) > 0 for a in big))
+    five = build_attempts(make_q(5, "multiple"))
+    check("五项全选不会被上限截掉", five[0] == list("ABCDE"), str(five[0]))
 
 
 def test_no_options() -> None:
@@ -114,7 +116,8 @@ class FakeAdapter:
     """模拟平台：只有选中 correct_answer 才判定正确。"""
 
     def __init__(self, correct: set[str], max_rounds: int = 100,
-                 feedback_override: str | None = None):
+                 feedback_override: str | None = None,
+                 no_wrong_feedback: bool = False):
         self.correct = correct
         self.selected: set[str] = set()
         self.submits = 0
@@ -122,9 +125,15 @@ class FakeAdapter:
         self.confirmed = False
         self.question_open = True
         self.feedback_override = feedback_override
+        self.no_wrong_feedback = no_wrong_feedback
         self.max_rounds = max_rounds
 
     async def detect_question(self, page): return self.question_open
+
+    async def question_already_correct(self, page, question): return False
+
+    def retry_without_feedback(self, question):
+        return self.no_wrong_feedback and question.qtype == "multiple"
 
     async def clear_selection(self, page, question): self.selected.clear()
 
@@ -144,7 +153,7 @@ class FakeAdapter:
         if self.selected == self.correct:
             self.question_open = False
             return "correct"
-        return "wrong"
+        return "unknown" if self.no_wrong_feedback else "wrong"
 
     async def confirm_and_close(self, page):
         self.confirmed = True
@@ -210,6 +219,10 @@ def test_retry_loop() -> None:
     a4 = FakeAdapter(correct={"A", "C"})
     ok4, _ = run_solve(a4, qm, ["A", "B"])
     check("多选能试到正确组合", ok4, f"submits={a4.submits}")
+    no_grade = FakeAdapter(correct={"A", "C"}, no_wrong_feedback=True)
+    ok_no_grade, _ = run_solve(no_grade, qm, [])
+    check("共享课多选暂未判题时继续有限尝试", ok_no_grade and no_grade.submits == 2,
+          f"submits={no_grade.submits}")
 
     # 永远判错 —— 必须能退出，不能死循环
     a5 = FakeAdapter(correct={"NOPE"}, max_rounds=40)
@@ -228,11 +241,15 @@ def test_retry_loop() -> None:
     ok7, _ = run_solve(a7, q, ["A"], retry=False)
     check("保守模式只提交一次", a7.submits == 1, f"submits={a7.submits}")
 
-    # 弹窗中途自己消失（平台判定通过）
-    a8 = FakeAdapter(correct={"Z"})
+    # 弹窗消失仍需平台反馈；错题弹窗也可能被关闭。
+    a8 = FakeAdapter(correct={"Z"}, feedback_override="correct")
     a8.question_open = False
     ok8, _ = run_solve(a8, q, ["A"])
-    check("弹窗已消失时视为通过", ok8 is True and a8.submits == 0)
+    check("弹窗消失且明确判对才视为通过", ok8 is True and a8.submits == 0)
+    a9 = FakeAdapter(correct={"Z"}, feedback_override="unknown")
+    a9.question_open = False
+    ok9, _ = run_solve(a9, q, ["A"])
+    check("弹窗消失但无正确反馈时不记为答对", ok9 is False and a9.submits == 0)
 
 
 def test_non_choice() -> None:

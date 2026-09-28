@@ -117,6 +117,31 @@ def test_other_settings_roundtrip() -> None:
         assert config.font_size == 18
 
 
+def test_provider_keys_roundtrip() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "config.toml"
+        save_config(path, {
+            "provider": "zhipu", "api_key": "fake-zhipu-key",
+            "api_keys": {"zhipu": "fake-zhipu-key", "deepseek": "fake-deepseek-key"},
+        })
+        config = Config(path)
+        assert config.api_key == "fake-zhipu-key"
+        assert config.api_keys == {
+            "zhipu": "fake-zhipu-key", "deepseek": "fake-deepseek-key",
+        }
+
+        save_config(path, {"provider": "deepseek", "api_key": "fake-deepseek-key",
+                           "api_keys": config.api_keys})
+        assert Config(path).api_key == "fake-deepseek-key"
+
+        save_config(path, {"provider": "zhipu", "api_key": "fake-legacy-key"})
+        assert Config(path).api_keys == {"zhipu": "fake-legacy-key"}
+
+        path.write_text('[answer]\nprovider = "zhipu"\napi_key = "fake-legacy-key"\n'
+                        '[answer.api_keys]\n', encoding="utf-8")
+        assert Config(path).api_key == "fake-legacy-key"
+
+
 def test_finish_action_only_after_success() -> None:
     import threading
 
@@ -198,6 +223,7 @@ if __name__ == "__main__":
     test_browser_selection()
     test_config_browser_path_roundtrip()
     test_other_settings_roundtrip()
+    test_provider_keys_roundtrip()
     test_finish_action_only_after_success()
     test_save_settings_without_course()
     test_exit_saves_current_settings()

@@ -49,6 +49,23 @@ def _noop_stop() -> bool:
     return False
 
 
+async def wait_for_video_question(page: Page, adapter: PlatformAdapter,
+                                  should_stop=_noop_stop) -> None:
+    detect_question = getattr(adapter, "detect_question", None)
+    if detect_question is None:
+        return
+    waiting = False
+    while True:
+        if should_stop():
+            raise StopRequested
+        if not await detect_question(page):
+            return
+        if not waiting:
+            logger.info("视频弹题处理中，暂缓切换课程目录。")
+            waiting = True
+        await asyncio.sleep(0.5)
+
+
 async def ensure_login(
     page: Page, context: BrowserContext, adapter: PlatformAdapter, config: Config,
     should_stop=_noop_stop,
@@ -73,7 +90,7 @@ async def ensure_login(
                 try:
                     if await adapter.detect_captcha(page):
                         logger.warn(
-                            f"[需要你处理] {adapter.name}登录页出现安全验证，请在浏览器手动完成。",
+                            f"{adapter.name}登录页出现安全验证，请在浏览器手动完成。",
                             shift=True,
                         )
                         captcha_notified = True
@@ -92,8 +109,13 @@ async def study_lesson(
     config: Config, should_stop=_noop_stop
 ) -> str:
     """播完一节。也会识别用户手动切课和独立章节测验。"""
+    if should_stop():
+        raise StopRequested
+    await wait_for_video_question(page, adapter, should_stop)
     if not await adapter.enter_lesson(page, lesson):
         return "skipped"
+    if should_stop():
+        raise StopRequested
     if lesson.kind == "chapter":
         return "chapter"
     if lesson.kind in ("ppt", "pdf"):
@@ -106,6 +128,8 @@ async def study_lesson(
             raise StopRequested
         return "finished" if finished else "skipped"
     if await adapter.detect_chapter_test(page):
+        if should_stop():
+            raise StopRequested
         return "chapter"
 
     logger.info(f"正在学习：{lesson.title}")
@@ -113,6 +137,7 @@ async def study_lesson(
     while True:
         if should_stop():
             raise StopRequested
+        await wait_for_video_question(page, adapter, should_stop)
         if config.limit_max_minutes and clock.reached(config.limit_max_minutes):
             return "limit"
         if waited > LESSON_TIMEOUT_SECONDS:
@@ -187,8 +212,13 @@ async def study_course(
 
     attempts: dict[str, int] = {}
     while True:
+        if should_stop():
+            raise StopRequested
+        await wait_for_video_question(page, adapter, should_stop)
         # 每一轮重读目录，既拿到最新完成状态，也避免平台重绘后的旧节点。
         lessons = await adapter.list_lessons(page)
+        if should_stop():
+            raise StopRequested
         if index >= len(lessons):
             if not confirm_progress:
                 break
@@ -205,6 +235,8 @@ async def study_course(
         logger.info(f"[{index + 1}/{len(lessons)}] {lesson.title}", shift=True)
         reason = await study_lesson(page, adapter, lesson, clock, config, should_stop)
         print()  # 结束 progress 的原地刷新行
+        if should_stop():
+            raise StopRequested
         if reason == "switched":
             lessons = await adapter.list_lessons(page)
             active_key = await adapter.active_lesson_key(page)
@@ -234,14 +266,23 @@ async def study_course(
             logger.warn(f"《{lesson.title}》尝试 3 次后目录仍未完成，先继续后续课件。")
         if reason == "finished":
             logger.info(f"《{lesson.title}》完成。")
+            if should_stop():
+                raise StopRequested
+            await wait_for_video_question(page, adapter, should_stop)
             if config.answer_enabled and await adapter.open_chapter_test(page):
+                if should_stop():
+                    raise StopRequested
                 await solve_chapter_test_once(page, adapter, config, provider, cache)
         elif reason == "chapter":
+            if should_stop():
+                raise StopRequested
             if config.answer_enabled:
                 handler = getattr(adapter, "process_chapter_test", None)
                 if handler is not None:
                     await handler(page, provider, cache, config.answer_cache,
                                   config.auto_submit, should_stop)
+                    if should_stop():
+                        raise StopRequested
                     if getattr(adapter, "course_page_lost", False):
                         logger.warn("平时测试后返回课程目录失败，本地址标记未完成，不再误报全部完成。")
                         return False
@@ -381,7 +422,7 @@ async def run(config: Config, should_stop=_noop_stop) -> bool:
                     except Exception as exc:
                         if not getattr(adapter, "confirm_catalog_progress", False):
                             raise
-                        logger.error(f"当前课程目录核对失败：{Logger.summarize(exc)}")
+                        logger.error(f"当前课程处理失败：{Logger.summarize(exc)}")
                         course_processed = False
                     if course_processed:
                         studied_any = True
