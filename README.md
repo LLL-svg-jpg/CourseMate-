@@ -4,7 +4,7 @@
 
 使用 Python、Playwright 和 Tkinter，支持多账号管理、按课程地址绑定账号、独立登录会话，以及视频播放和部分答题流程。
 
-[下载 Windows 版本](https://github.com/LLL-svg-jpg/CourseMate-/releases/latest) · [登录与验证维护记录](docs/08-登录与验证码验证踩坑方法经验-2026-10-01.md)
+[下载 Windows 版本](https://github.com/LLL-svg-jpg/CourseMate-/releases/latest)
 
 ## 快速开始
 
@@ -34,7 +34,7 @@
 
 登录和部分验证码自动处理已有有限真实样本验证，平台策略变化后仍可能需要人工处理。学习通视频弹题反馈、智慧职教弹题与 AI 作答仍有适配限制。正式考试请人工检查，默认不自动交卷。
 
-本机测试、EXE 启动、真实认证和服务器学习记录是不同证据，不能据此保证整门课完成或学时被计入。历史验证范围及已知界面重绘问题见[维护记录](docs/08-登录与验证码验证踩坑方法经验-2026-10-01.md)。
+本机测试、EXE 启动、真实认证和服务器学习记录是不同证据，不能据此保证整门课完成或学时被计入。字号更新仍可能有短暂重绘过渡，关于页的依赖检查按钮在部分启动中漏绘。
 
 ## 配置与升级
 
@@ -52,6 +52,6 @@ python -m pip install -r requirements.txt
 python CourseMate.pyw
 ```
 
-`安装依赖.bat` 仅用于源码环境，不能修复缺少内部依赖的 EXE。开发测试直接运行相应 `tests/test_*.py`；打包使用 `build.py --help` 指定全新的输出目录。
+`安装依赖.bat` 仅用于源码环境，不能修复缺少内部依赖的 EXE。测试和交接材料仅保存在维护者本机；完整发布构建依赖本机测试资料。
 
 第三方轨迹参考实现的来源和许可见 [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt)。
