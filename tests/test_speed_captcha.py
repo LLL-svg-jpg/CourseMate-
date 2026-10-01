@@ -3,8 +3,7 @@
 两件事都容易"看着生效了、实际没生效"：
 - 倍速：界面滑块放宽了，但配置层还在按 2.0 夹——调到 3x 实际仍按 2x 播放；
   或者反过来，开关关掉了，配置文件里手写的 8.0 却照样生效。
-- 验证码：程序不破解验证码，只能等人来点。那么"及时被发现"就是唯一能做的事，
-  它坏了不会报错，只会让人白等——所以得测。
+- 验证码：本地尝试未通过时需及时提醒，并在设置时限后跳过当前地址。
 """
 from __future__ import annotations
 
@@ -94,9 +93,8 @@ def test_captcha_option() -> None:
     check("界面按同一个前缀识别", '"[需要你处理]" in message' in gsrc)
     check("识别后会调用叫人的函数", "_call_user_over" in gsrc)
 
-    # 不破解验证码是刻意的选择，别哪天被"顺手实现"了
-    for bad in ("solve_captcha", "bypass_captcha", "crack_captcha", "slider_solve"):
-        check(f"没有 {bad} 这类破解入口", bad not in src.lower() and bad not in gsrc.lower())
+    check("登录与验证默认等待 120 秒", make().login_timeout_seconds == 120)
+    check("等待时限可设置", make(login_timeout_seconds=17).login_timeout_seconds == 17)
 
     from coursemate.platforms import chaoxing, icve, zhihuishu
     cxsrc = Path(chaoxing.__file__).read_text(encoding="utf-8")
@@ -181,7 +179,10 @@ def test_gui_wiring() -> None:
         return
 
     root = tk.Tk()
-    app = CourseMateGUI(root)
+    missing_config = mock.Mock()
+    missing_config.exists.return_value = False
+    with mock.patch("coursemate.gui.CONFIG_PATH", missing_config):
+        app = CourseMateGUI(root)
     root.update_idletasks()
     try:
         app.high_speed_var.set(False)

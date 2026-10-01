@@ -17,7 +17,8 @@ from .answer.base import AnswerProvider, AnswerResult
 from .answer.cache import AnswerCache
 from .answer.strategy import build_attempts, describe_attempt
 from .config import Config
-from .events import StudyClock
+from .events import StudyClock, VerificationTimeout
+from .verification import has_verification, wait_verification
 from .logger import Logger
 from .platforms.base import PlatformAdapter
 
@@ -212,36 +213,42 @@ async def captcha_worker(
 ) -> None:
     """人机验证监视。
 
-    只检测并交还人工，不做任何破解。检测到后把等待时间从有效学习时长里扣除，
+    已识别的控件尝试本地识别，未通过时限时等待人工。等待时间从有效学习时长里扣除，
     否则限时刷课会被验证等待时间白白吃掉。
     """
     while True:
         try:
             await asyncio.sleep(3)
-            if not await adapter.detect_captcha(page):
+            if not await adapter.detect_captcha(page) and not await has_verification(page):
                 continue
 
             # 这条带 [需要你处理] 前缀，界面据此把窗口叫到最前。
-            # 不破解验证码是刻意的，那么"让人及时知道该来处理了"就得做扎实：
+            # 本地验证未通过时，及时叫人接管：
             # 窗口收在托盘里、被别的程序挡着时，光响一声铃很容易错过，
             # 一错过就白等在那儿，限时刷课的时间也跟着耗掉
-            logger.warn("[需要你处理] 检测到人机验证，请回到浏览器手动完成验证...",
+            logger.warn("[需要你处理] 检测到人机验证，尝试本地识别；未通过时请手动处理。",
                         shift=True)
             if config.beep_on_captcha:
                 print("\a", end="", flush=True)
 
             await hold_playback_for_manual_check(page, adapter, True)
             clock.pause()
+            cleared = False
             try:
-                while not await adapter.captcha_cleared(page):
-                    await asyncio.sleep(2)
+                try:
+                    await asyncio.wait_for(wait_verification(page, adapter),
+                                           timeout=config.login_timeout_seconds)
+                    cleared = True
+                except asyncio.TimeoutError:
+                    raise VerificationTimeout from None
             finally:
                 waited = clock.resume()
-                await hold_playback_for_manual_check(page, adapter, False)
-            logger.info(f"人机验证已完成，本次等待 {waited:.0f} 秒不计入学习时长。", shift=True)
-            # 验证刚过一段时间内不会再触发，避免空转
-            await asyncio.sleep(30)
+                if cleared:
+                    await hold_playback_for_manual_check(page, adapter, False)
+            logger.info(f"验证控件已消失，本次等待 {waited:.0f} 秒不计入学习时长。", shift=True)
         except asyncio.CancelledError:
+            raise
+        except VerificationTimeout:
             raise
         except Exception as exc:
             if _handle(exc, "人机验证模块"):

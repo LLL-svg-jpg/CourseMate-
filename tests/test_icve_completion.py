@@ -85,7 +85,10 @@ async def test_continue_next_address():
             pass
 
     async def launch(*args):
-        return object(), object()
+        return object(), SimpleNamespace(browser=object())
+
+    async def login(*args):
+        pass
 
     async def incomplete(page, adapter, url, *args):
         opened.append(url)
@@ -97,11 +100,16 @@ async def test_continue_next_address():
     async def idle(*args):
         await asyncio.sleep(3600)
 
-    config = SimpleNamespace(course_urls=["first", "second"], answer_cache=False,
+    config = SimpleNamespace(course_items=[{"url": "first"}, {"url": "second"}],
+                             accounts={"default": {"id": "default", "name": "默认账号",
+                                                   "platform": "", "username": "", "password": ""}},
+                             answer_cache=False,
                              answer_enabled=False, retry_until_correct=False,
                              auto_submit=False, keep_browser_open=False)
     with (patch("coursemate.runner.async_playwright", Playwright),
           patch("coursemate.runner.launch", launch),
+          patch("coursemate.runner.ensure_login", login),
+          patch("coursemate.runner.persist_login", login),
           patch("coursemate.runner.resolve", lambda url: Adapter()),
           patch("coursemate.runner.AnswerCache", Cache),
           patch("coursemate.runner.build_provider", lambda config: None),

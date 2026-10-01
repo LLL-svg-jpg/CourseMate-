@@ -5,6 +5,16 @@
 # 留空则运行时在浏览器里手动登录，程序会自动保存 Cookie，下次免密
 username = ""
 password = ""
+# 留空按地址识别；也可填知道智慧树 / 超星学习通 / 智慧职教
+platform = ""
+
+# 其他账号建议在图形界面新增；每条地址保存 account_id 进行绑定。
+# [[account.list]]
+# id = "account_1"
+# name = "账号 1"
+# platform = ""
+# username = ""
+# password = ""
 
 [browser]
 # chrome / edge / chromium
@@ -57,6 +67,8 @@ cache = true
 [answer.api_keys]
 
 [runtime]
+# 每次登录或课程页面验证的等待时限；至少 1 秒，超时跳过当前地址
+login_timeout_seconds = 120
 # 日志级别 DEBUG / INFO / WARN / ERROR
 log_level = "INFO"
 # 遇到人机验证时，是否发出提示音提醒你回来处理

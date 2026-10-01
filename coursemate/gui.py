@@ -18,9 +18,11 @@ import queue
 import subprocess
 import threading
 import time
+import uuid
+import webbrowser
 import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from .config import SPEED_MAX, SPEED_MAX_UNLOCKED, SPEED_MIN, Config, ConfigError
 from .config_writer import save_config
@@ -29,6 +31,7 @@ from .paths import app_dir, is_frozen, resource
 from . import providers
 
 APP_NAME = "CourseMate 刷课助手"
+PROJECT_URL = "https://github.com/LLL-svg-jpg/CourseMate-"
 # 配置必须落在 exe 旁边，不能落在打包解压出来的临时目录
 CONFIG_PATH = app_dir() / "config.toml"
 
@@ -59,6 +62,110 @@ COLORS = {
     "PROGRESS": "#0b6e4f",
     "SYSTEM": "#1565c0",
 }
+
+
+class _AccountDialog(simpledialog.Dialog):
+    def __init__(self, parent, title, name="", credentials=False):
+        self.name = name
+        self.credentials = credentials
+        super().__init__(parent, title)
+
+    def body(self, parent):
+        self.minsize(520, 180)
+        frame = ttk.Frame(parent, padding=20)
+        frame.pack(fill="both", expand=True)
+        self.entries = {}
+        fields = [("name", "名称", self.name)]
+        if self.credentials:
+            fields += [("username", "账号", ""), ("password", "密码", "")]
+        for row, (key, label, value) in enumerate(fields):
+            ttk.Label(frame, text=label, font=FONT).grid(row=row, column=0, sticky="w", pady=8)
+            entry = ttk.Entry(frame, width=30, font=FONT, show="●" if key == "password" else "")
+            entry.insert(0, value)
+            entry.grid(row=row, column=1, sticky="ew", padx=(12, 0), pady=8)
+            self.entries[key] = entry
+        ttk.Label(frame, text="名称用于区分账号；账号和密码填写网页登录凭据。" if self.credentials
+                  else "请输入便于识别的名称：", font=FONT_HINT).grid(
+                      row=len(fields), column=0, columnspan=2, sticky="w", pady=(8, 0))
+        return self.entries["name"]
+
+    def buttonbox(self):
+        box = ttk.Frame(self, padding=(20, 0, 20, 20))
+        box.pack(fill="x")
+        ttk.Style(self).configure("AccountDialog.TButton", font=FONT, padding=(16, 8))
+        ttk.Button(box, text="取消", command=self.cancel, style="AccountDialog.TButton").pack(side="right")
+        ttk.Button(box, text="确定", command=self.ok, style="AccountDialog.TButton").pack(
+            side="right", padx=(0, 12))
+        self.bind("<Return>", self.ok)
+        self.bind("<Escape>", self.cancel)
+
+    def validate(self):
+        if self.entries["name"].get().strip():
+            return True
+        messagebox.showwarning("账号名称", "请输入便于识别的名称。", parent=self)
+        return False
+
+    def apply(self):
+        self.result = {key: entry.get() for key, entry in self.entries.items()}
+        self.result["name"] = self.result["name"].strip()
+        if self.credentials:
+            self.result["username"] = self.result["username"].strip()
+
+
+class _FontScale(tk.Frame):
+    """字号滑块：直接绘制滑槽和滑块，避免本机 EXE 的 Scale 漏绘。"""
+
+    def __init__(self, parent, variable, command, on_release, bg):
+        super().__init__(parent, width=100, height=26, bg=bg)
+        self.variable, self.command = variable, command
+        self.on_release = on_release
+        self._drag_offset = None
+        self._track = tk.Label(self, text=" ", bg="#d9d9d9", borderwidth=0)
+        self._track.place(x=7, y=12, relwidth=1, width=-14, height=2)
+        self._thumb = tk.Label(self, text=" ", bg="#0078d7", borderwidth=0)
+        self.bind("<Configure>", self._draw)
+        for widget in (self, self._track, self._thumb):
+            widget.bind("<Button-1>", self._press)
+            widget.bind("<B1-Motion>", self._drag)
+            widget.bind("<ButtonRelease-1>", self._release)
+        self._trace = variable.trace_add("write", self._value_changed)
+
+    def coords(self, value=None):
+        value = self.variable.get() if value is None else value
+        return (7 + (max(10, min(24, value)) - 10) / 14 * max(1, self.winfo_width() - 14), 13)
+
+    def identify(self, x, y):
+        center, _ = self.coords()
+        return "slider" if abs(x - center) <= 7 and 1 <= y <= 25 else ""
+
+    def _draw(self, _event=None):
+        # 移动子窗口后主动重画背景，擦掉滑块旧位置的残留。
+        self.configure(bg=self.cget("bg"))
+        self._track.configure(bg="#d9d9d9")
+        self._thumb.place(x=round(self.coords()[0] - 7), y=1, width=14, height=24)
+
+    def _value_changed(self, *_args):
+        self._draw()
+        self.command()
+
+    def _press(self, event):
+        x = event.x + (event.widget.winfo_x() if event.widget is not self else 0)
+        y = event.y + (event.widget.winfo_y() if event.widget is not self else 0)
+        self._drag_offset = x - self.coords()[0] if self.identify(x, y) else None
+
+    def _drag(self, event):
+        if self._drag_offset is not None:
+            x = event.x + (event.widget.winfo_x() if event.widget is not self else 0)
+            value = 10 + (x - self._drag_offset - 7) / max(1, self.winfo_width() - 14) * 14
+            self.variable.set(max(10, min(24, value)))
+
+    def _release(self, _event):
+        self._drag_offset = None
+        self.on_release()
+
+    def destroy(self):
+        self.variable.trace_remove("write", self._trace)
+        super().destroy()
 
 # Vista 主题会把获得焦点的只读下拉框画成蓝底白字；这和真正可编辑的输入框
 # 不同，选完浏览器/服务商后不该还像在编辑。可编辑的模型框不使用这个样式。
@@ -107,6 +214,8 @@ class UrlList(ttk.Frame):
     def __init__(self, parent):
         super().__init__(parent)
         self.rows: list[dict] = []
+        self.accounts = {"default": "默认账号"}
+        self.configure_row = None
         self._drag: dict | None = None
 
         # 和设置页共用同一套滚动实现：地址一多，这里同样会快速滚，
@@ -133,7 +242,7 @@ class UrlList(ttk.Frame):
 
     # ---- 行管理 ----
 
-    def add_row(self, value: str = "", note: str = "") -> None:
+    def add_row(self, value: str = "", note: str = "", account_id: str = "default") -> None:
         row = ttk.Frame(self.inner, padding=(2, 4))
         row.pack(fill="x", expand=True)
 
@@ -152,12 +261,24 @@ class UrlList(ttk.Frame):
         note_entry = ttk.Entry(row, textvariable=note_var, font=FONT, width=14)
         note_entry.pack(side="left", padx=(0, 6))
 
+        account_var = tk.StringVar(value=self.accounts.get(account_id, "账号已移除"))
+        account_combo = ttk.Combobox(row, textvariable=account_var, width=12,
+                                     font=FONT, style=READONLY_COMBO_STYLE,
+                                     state="readonly", values=list(self.accounts.values()))
+        account_combo.pack(side="left", padx=(0, 6))
+
         record = {"frame": row, "var": var, "entry": entry, "label": index_label,
-                  "note_var": note_var, "note_entry": note_entry, "handle": handle}
+                  "note_var": note_var, "note_entry": note_entry, "handle": handle,
+                  "account_id": account_id, "account_var": account_var, "account_combo": account_combo}
+        account_combo.bind("<<ComboboxSelected>>", lambda e, r=record:
+                           r.update(account_id=list(self.accounts)[r["account_combo"].current()]))
         remove_btn = ttk.Button(row, text="✕", width=3,
                                 command=lambda r=record: self.remove_row(r))
         remove_btn.pack(side="left")
         record["button"] = remove_btn
+
+        if self.configure_row is not None:
+            self.configure_row(row)
 
         for w in (handle, index_label):
             w.bind("<Button-1>", lambda e, r=record: self._drag_start(r))
@@ -177,6 +298,8 @@ class UrlList(ttk.Frame):
         if len(self.rows) <= 1:
             record["var"].set("")
             record["note_var"].set("")
+            record["account_id"] = "default"
+            record["account_var"].set(self.accounts["default"])
             return
         record["frame"].destroy()
         self.rows.remove(record)
@@ -243,7 +366,10 @@ class UrlList(ttk.Frame):
         for r in self.rows:
             url = r["var"].get().strip()
             if url:
-                out.append({"url": url, "note": r["note_var"].get().strip()})
+                item = {"url": url, "note": r["note_var"].get().strip()}
+                if r["account_id"] != "default":
+                    item["account_id"] = r["account_id"]
+                out.append(item)
         return out
 
     def set_items(self, items: list[dict]) -> None:
@@ -251,8 +377,14 @@ class UrlList(ttk.Frame):
             record["frame"].destroy()
         self.rows.clear()
         for item in items or [{"url": "", "note": ""}]:
-            self.add_row(item.get("url", ""), item.get("note", ""))
+            self.add_row(item.get("url", ""), item.get("note", ""), item.get("account_id", "default"))
         self._refresh()
+
+    def set_accounts(self, accounts: dict[str, dict[str, str]]) -> None:
+        self.accounts = {key: value["name"] for key, value in accounts.items()}
+        for row in self.rows:
+            row["account_combo"].configure(values=list(self.accounts.values()))
+            row["account_var"].set(self.accounts.get(row["account_id"], "账号已移除"))
 
     def set_urls(self, urls: list[str]) -> None:
         self.set_items([{"url": u, "note": ""} for u in urls])
@@ -433,6 +565,12 @@ class CourseMateGUI:
         style.configure(".", font=FONT)
         style.configure("TLabelframe.Label", font=FONT_BOLD)
         style.configure("TNotebook.Tab", font=FONT, padding=(18, 8))
+        # 三个页签保留键盘焦点，只移除围绕文字的虚线绘制元素。
+        style.layout("TNotebook.Tab", [("Notebook.tab", {"sticky": "nswe", "children": [
+            ("Notebook.padding", {"side": "top", "sticky": "nswe", "children": [
+                ("Notebook.label", {"side": "top", "sticky": ""})
+            ]})
+        ]})])
         style.configure("TButton", font=FONT, padding=(10, 6))
         style.configure("Run.TButton", font=("Microsoft YaHei UI", 16, "bold"),
                         padding=(16, 8))
@@ -596,13 +734,14 @@ class CourseMateGUI:
 
         head = ttk.Frame(tab)
         head.grid(row=0, column=0, columnspan=4, sticky="ew")
-        ttk.Label(head, text="课程播放页／学习通考试地址").pack(side="left")
+        ttk.Label(head, text="课程首页／播放页／学习通考试地址").pack(side="left")
         ttk.Label(head, text="（右侧小框可写备注，方便认出是哪门课）",
                   style="Hint.TLabel").pack(side="left", padx=(6, 0))
         self.url_list = UrlList(tab)
+        self.url_list.configure_row = self._configure_url_row
         self.url_list.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(4, 2))
 
-        ttk.Label(tab, text="刷课填播放页地址；学习通独立考试可填正在作答的考试页地址。",
+        ttk.Label(tab, text="可填课程章节目录首页或播放页的完整地址；学习通独立考试可填正在作答的考试页地址。",
                   style="Hint.TLabel").grid(row=2, column=0, columnspan=4, sticky="w", pady=(0, 8))
 
         ttk.Label(tab, text="播放倍速").grid(row=3, column=0, sticky="w")
@@ -648,13 +787,26 @@ class CourseMateGUI:
         sep = ttk.Separator(tab, orient="horizontal")
         sep.grid(row=7, column=0, columnspan=4, sticky="ew", pady=10)
 
-        ttk.Label(tab, text="账号").grid(row=8, column=0, sticky="w")
+        self._accounts = {"default": {"id": "default", "name": "默认账号", "platform": "",
+                                      "username": "", "password": ""}}
+        self._active_account_id = "default"
+        ttk.Label(tab, text="编辑账号").grid(row=8, column=0, sticky="w")
+        self.account_combo = ttk.Combobox(tab, state="readonly", values=["默认账号"], width=24)
+        self.account_combo.current(0)
+        self.account_combo.grid(row=8, column=1, sticky="w", padx=(8, 12))
+        self.account_combo.bind("<<ComboboxSelected>>", self._switch_account)
+        account_buttons = ttk.Frame(tab)
+        account_buttons.grid(row=8, column=2, columnspan=2, sticky="w")
+        for text, command in (("新增", self._add_account), ("改名", self._rename_account),
+                              ("移除", self._remove_account)):
+            ttk.Button(account_buttons, text=text, command=command).pack(side="left", padx=(0, 4))
+        ttk.Label(tab, text="账号").grid(row=9, column=0, sticky="w")
         self.username_var = tk.StringVar()
         ttk.Entry(tab, textvariable=self.username_var, width=24).grid(
-            row=8, column=1, sticky="w", padx=(8, 12))
-        ttk.Label(tab, text="密码").grid(row=8, column=2, sticky="e")
+            row=9, column=1, sticky="w", padx=(8, 12))
+        ttk.Label(tab, text="密码").grid(row=9, column=2, sticky="e")
         pwd_box = ttk.Frame(tab)
-        pwd_box.grid(row=8, column=3, sticky="w", padx=(8, 0))
+        pwd_box.grid(row=9, column=3, sticky="w", padx=(8, 0))
         self.password_var = tk.StringVar()
         self.password_entry = ttk.Entry(pwd_box, textvariable=self.password_var,
                                         width=20, show="●")
@@ -663,8 +815,9 @@ class CourseMateGUI:
         ttk.Checkbutton(pwd_box, text="显示", variable=self.show_pwd_var,
                         command=self._toggle_password_visibility).pack(
             side="left", padx=(6, 0))
-        ttk.Label(tab, text="留空即可 —— 首次运行时在弹出的浏览器里手动登录，之后会自动记住",
-                  style="Hint.TLabel").grid(row=9, column=0, columnspan=4, sticky="w", pady=(4, 0))
+        ttk.Label(tab, text="选中账号后填写账号、密码，再保存配置；地址右侧选择使用的账号。\n"
+                  "默认账号首次为空；已有凭据来自本机配置。平台按地址自动识别。",
+                  style="Hint.TLabel").grid(row=10, column=0, columnspan=4, sticky="w", pady=(4, 0))
 
         tab.columnconfigure(1, weight=1)
         return tab
@@ -722,7 +875,7 @@ class CourseMateGUI:
         ttk.Label(tab, text="不填也能播放；视频弹题可按选项重试，独立章节测验不会乱猜",
                   style="Hint.TLabel").grid(row=7, column=0, columnspan=4, sticky="w")
 
-        self.base_url_var = tk.StringVar()
+        self.base_url_var = tk.StringVar(value=providers.get("deepseek").base_url)
         self.base_url_entry = ttk.Entry(tab, textvariable=self.base_url_var)
         self.base_url_entry.grid(row=8, column=1, columnspan=3, sticky="ew",
                                  padx=(8, 0), pady=(8, 0))
@@ -808,30 +961,39 @@ class CourseMateGUI:
 
         # ---- 界面 ----
         box = section("界面")
-        ttk.Label(box, text="字号").grid(row=0, column=0, sticky="w")
-        font_row = ttk.Frame(box)
+        # 本机 EXE 切页时，主题控件会漏绘字号栏；这一行使用普通 Tk 控件。
+        field_bg = ttk.Style().lookup("TFrame", "background")
+        self.font_field_label = tk.Label(box, text="字号", font=FONT,
+                                        fg="#000000", bg=field_bg)
+        self.font_field_label.grid(row=0, column=0, sticky="w")
+        font_row = tk.Frame(box, bg=field_bg)
         font_row.grid(row=0, column=1, columnspan=2, sticky="ew", padx=(8, 0))
         font_row.columnconfigure(1, weight=1)
 
-        ttk.Button(font_row, text="－", width=3,
-                   command=lambda: self._nudge_font(-1)).grid(row=0, column=0)
-        # 用 DoubleVar：Scale 内部本来就是浮点，绑 IntVar 会让滑块在拖动时
+        self.font_minus = tk.Button(font_row, text="－", width=3, font=FONT,
+                                    bg="#ffffff", activebackground="#e5f1fb",
+                                    relief="solid", bd=1, padx=6, pady=2,
+                                    command=lambda: self._nudge_font(-1))
+        self.font_minus.grid(row=0, column=0)
+        # 用 DoubleVar：拖动位置本来就是浮点，绑 IntVar 会让滑块在拖动时
         # 反复被取整"拽回"，手感就是拖不动。
         self.font_size_var = tk.DoubleVar(value=15.0)
-        self.font_scale = ttk.Scale(font_row, from_=10, to=24,
-                                    variable=self.font_size_var, orient="horizontal",
-                                    command=self._on_font_slider_move)
+        self._font_apply_job = None
+        # 拖动过程中只更新数字，松手才真正换字体。
+        # 每移动一像素就重建 style 会使滑块丢掉鼠标捕获。
+        self.font_scale = _FontScale(font_row, self.font_size_var,
+                                     self._on_font_slider_move, self._apply_font_size,
+                                     bg=field_bg)
         self.font_scale.grid(row=0, column=1, sticky="ew", padx=(6, 6))
-        # 点在滑槽（滑块以外的地方）上，ttk 默认会让滑块自己跑过去，
-        # 手一抖点空了字号就变了。这里挡掉，只认拖滑块和 －／＋ 按钮
-        self.font_scale.bind("<Button-1>", self._on_scale_press)
-        # 关键：拖动过程中只更新数字，松手才真正换字体。
-        # 每移动一像素就重建一次 style，界面会不停重绘，
-        # 滑块会因此丢掉鼠标捕获——表现出来就是"拖不动"。
-        self.font_scale.bind("<ButtonRelease-1>", lambda e: self._apply_font_size())
-        ttk.Button(font_row, text="＋", width=3,
-                   command=lambda: self._nudge_font(1)).grid(row=0, column=2)
-        self.font_size_label = ttk.Label(font_row, text="15", width=3, font=FONT_BOLD)
+        # 只认拖滑块和 －／＋ 按钮，避免点空滑槽时字号意外改变。
+        self.font_scale.bind("<Button-1>", self._on_scale_press, add="+")
+        self.font_plus = tk.Button(font_row, text="＋", width=3, font=FONT,
+                                   bg="#ffffff", activebackground="#e5f1fb",
+                                   relief="solid", bd=1, padx=6, pady=2,
+                                   command=lambda: self._nudge_font(1))
+        self.font_plus.grid(row=0, column=2)
+        self.font_size_label = tk.Label(font_row, text="15", width=3, font=FONT_BOLD,
+                                        fg="#000000", bg=field_bg)
         self.font_size_label.grid(row=0, column=3, padx=(8, 0))
 
         ttk.Label(box, text="拖动滑块后松手生效，或用 －／＋ 逐级微调（10~24）",
@@ -916,7 +1078,7 @@ class CourseMateGUI:
         self.captcha_popup_var = tk.BooleanVar(value=True)
         ttk.Checkbutton(box, text="并把窗口叫到最前", variable=self.captcha_popup_var).grid(
             row=7, column=0, columnspan=3, sticky="w")
-        ttk.Label(box, text="程序不破解验证码，一律暂停交还你处理；"
+        ttk.Label(box, text="匹配控件尝试本地验证，未通过时提醒人工处理；"
                             "窗口收在托盘里时，光响铃容易错过",
                   style="Hint.TLabel").grid(row=71, column=0, columnspan=3, sticky="w")
 
@@ -928,6 +1090,12 @@ class CourseMateGUI:
             row=8, column=1, sticky="w", padx=(8, 0), pady=(10, 0))
         ttk.Label(box, text="挂机刷课时可以选关机。执行前有 60 秒倒计时，随时能取消",
                   style="Hint.TLabel").grid(row=9, column=0, columnspan=3, sticky="w")
+        ttk.Label(box, text="登录／验证等待（秒）").grid(row=10, column=0, sticky="w", pady=(8, 0))
+        self.login_timeout_var = tk.StringVar(value="120")
+        ttk.Entry(box, textvariable=self.login_timeout_var, width=10).grid(
+            row=10, column=1, sticky="w", padx=(8, 0), pady=(8, 0))
+        ttk.Label(box, text="超时继续下一地址",
+                  style="Hint.TLabel").grid(row=10, column=2, sticky="w", padx=(8, 0))
 
         # ---- 网络 ----
         box = section("网络")
@@ -999,8 +1167,11 @@ class CourseMateGUI:
             row=0, column=0, columnspan=3, sticky="w")
         ttk.Label(box, text="作者：LLL-svg-jpg").grid(
             row=1, column=0, columnspan=3, sticky="w", pady=(6, 0))
-        ttk.Label(box, text="项目地址：https://github.com/LLL-svg-jpg/CourseMate-").grid(
-            row=2, column=0, columnspan=3, sticky="w", pady=(4, 0))
+        self.project_link = ttk.Label(box, text=f"项目地址：{PROJECT_URL}",
+                                      foreground="#1565c0", cursor="hand2", takefocus=True)
+        self.project_link.grid(row=2, column=0, columnspan=3, sticky="w", pady=(4, 0))
+        for event in ("<Button-1>", "<Return>", "<space>"):
+            self.project_link.bind(event, self._open_project)
         self.deps_label = ttk.Label(box, text="", style="Hint.TLabel")
         self.deps_label.grid(row=3, column=0, columnspan=3, sticky="w", pady=(4, 0))
         ttk.Button(box, text="检查运行依赖", command=self._show_deps).grid(
@@ -1012,6 +1183,15 @@ class CourseMateGUI:
         self._refresh_settings_info()
         self._show_section("界面")
         return tab
+
+    def _open_project(self, _event=None) -> None:
+        from .config import detect_browser
+
+        _, executable = detect_browser()
+        if executable:
+            subprocess.Popen([executable, PROJECT_URL])
+        else:
+            webbrowser.open(PROJECT_URL)
 
     def _show_section(self, title: str) -> None:
         """切换设置分类。一次只显示一页，所以永远不需要滚动。"""
@@ -1277,7 +1457,6 @@ class CourseMateGUI:
     def _on_scale_press(self, event) -> str | None:
         """只有按在滑块本身上才放行。
 
-        ttk.Scale 默认点滑槽就把滑块挪过去，等于"没点在按钮上也会自己动"。
         字号是全局设置，误触的代价是整个界面重排，所以宁可点不动。
         """
         if "slider" not in self.font_scale.identify(event.x, event.y):
@@ -1293,21 +1472,32 @@ class CourseMateGUI:
         size = int(round(self.font_size_var.get())) + delta
         size = max(10, min(24, size))
         self.font_size_var.set(float(size))
-        self.font_size_label.configure(text=str(size))
-        self._apply_font_size()
+        self._apply_font_bar(size)
+        if self._font_apply_job is not None:
+            self.root.after_cancel(self._font_apply_job)
+        # 连点只调整字号栏；停止点击后再统一重排全部页面。
+        self._font_apply_job = self.root.after(120, lambda: self._apply_font_size(defer_layout=True))
+
+    def _apply_font_bar(self, size: int) -> None:
+        for widget in (self.font_field_label, self.font_minus, self.font_plus):
+            widget.configure(font=("Microsoft YaHei UI", size))
+        self.font_size_label.configure(text=str(size), font=("Microsoft YaHei UI", size, "bold"))
 
     def _on_font_size_change(self, _value=None) -> None:
         """兼容旧调用点，等同于立即应用。"""
         self._apply_font_size()
 
-    def _apply_font_size(self) -> None:
+    def _apply_font_size(self, *, defer_layout: bool = False) -> None:
         """真正换字体。
 
         ttk 控件的字体走 Style，改 Style 就能一次性影响全部；
         但 tk.Text、tk.Label 和 Entry 不吃 Style，得单独设。
         """
+        if self._font_apply_job is not None:
+            self.root.after_cancel(self._font_apply_job)
+            self._font_apply_job = None
         size = int(round(self.font_size_var.get()))
-        self.font_size_label.configure(text=str(size))
+        self._apply_font_bar(size)
         family = "Microsoft YaHei UI"
         style = ttk.Style()
         style.configure(".", font=(family, size))
@@ -1341,7 +1531,11 @@ class CourseMateGUI:
                     menu.configure(font=(family, size))
                 except tk.TclError:
                     pass
-        self._update_minsize()
+        if defer_layout:
+            # 让 Tk 先处理正常布局，避免把整窗绘制挤进一次按钮事件。
+            self.root.after(30, self._update_minsize)
+        else:
+            self._update_minsize()
 
     def _apply_font_to_inputs(self, widget, font) -> None:
         family, size = font
@@ -1555,6 +1749,10 @@ class CourseMateGUI:
 
         for cls in ("TEntry", "TCombobox", "TSpinbox"):
             self.root.bind_class(cls, "<<TraverseIn>>", on_traverse)
+
+    def _configure_url_row(self, row) -> None:
+        self._apply_font_to_inputs(row, (FONT[0], int(round(self.font_size_var.get()))))
+        self._tidy_comboboxes(row)
 
     def _tidy_comboboxes(self, widget) -> None:
         """选完之后把文字上的蓝底选中态清掉。
@@ -1848,16 +2046,24 @@ class CourseMateGUI:
             messagebox.showinfo("数据位置", f"{app_dir()}\n\n({exc})", parent=self.root)
 
     def _clear_cookies(self) -> None:
-        path = app_dir() / "runtime" / "cookies.json"
-        if not path.exists():
+        from .browser import account_storage_path
+
+        path = account_storage_path(self._accounts[self._active_account_id])
+        prefix = path.name.split("-", 1)[0]
+        paths = list(path.parent.glob(f"{prefix}-*.json"))
+        legacy = app_dir() / "runtime" / "cookies.json"
+        if self._active_account_id == "default" and legacy.exists():
+            paths.append(legacy)
+        if not paths:
             messagebox.showinfo("清除登录状态", "当前没有保存的登录状态。", parent=self.root)
             return
         if not messagebox.askokcancel(
                 "清除登录状态",
-                "下次运行时需要重新登录一次。确定吗？", parent=self.root):
+                "将清除当前编辑账号的登录状态；下次需要重新登录。确定吗？", parent=self.root):
             return
         try:
-            path.unlink()
+            for path in paths:
+                path.unlink()
             self._append_log("SYSTEM", "登录状态已清除，下次运行需重新登录。")
         except OSError as exc:
             messagebox.showerror("清除失败", str(exc), parent=self.root)
@@ -1873,6 +2079,7 @@ class CourseMateGUI:
         "allow_high_speed": False, "captcha_popup": True,
         "answer_enabled": True, "retry_until_correct": True, "auto_submit": False,
         "exam_auto_submit": False,
+        "login_timeout_seconds": 120,
     }
 
     def _restore_defaults(self, confirm: bool = True) -> None:
@@ -1915,6 +2122,7 @@ class CourseMateGUI:
         self.mute_var.set(d["mute"])
         self.high_speed_var.set(d["allow_high_speed"])
         self.captcha_popup_var.set(d["captcha_popup"])
+        self.login_timeout_var.set(str(d["login_timeout_seconds"]))
         self._apply_speed_ceiling()
         self.limit_var.set(str(int(d["limit_max_minutes"])))
 
@@ -1949,6 +2157,11 @@ class CourseMateGUI:
         self.url_list.set_items([])
         self.username_var.set("")
         self.password_var.set("")
+        self._accounts = {"default": {"id": "default", "name": "默认账号", "platform": "",
+                                      "username": "", "password": ""}}
+        self._active_account_id = "default"
+        self._refresh_accounts()
+        self._load_current_account()
         self.api_key_var.set("")
         self._provider_keys.clear()
         self._active_provider_key = "anthropic"
@@ -2058,7 +2271,77 @@ class CourseMateGUI:
 
     # ---------------- 配置读写 ----------------
 
+    def _store_current_account(self) -> None:
+        self._accounts[self._active_account_id].update(
+            username=self.username_var.get().strip(), password=self.password_var.get())
+
+    def _load_current_account(self) -> None:
+        account = self._accounts[self._active_account_id]
+        self.username_var.set(account["username"])
+        self.password_var.set(account["password"])
+
+    def _refresh_accounts(self) -> None:
+        self.account_combo.configure(values=[value["name"] for value in self._accounts.values()])
+        self.account_combo.current(list(self._accounts).index(self._active_account_id))
+        self.url_list.set_accounts(self._accounts)
+
+    def _switch_account(self, _event=None) -> None:
+        selected = self.account_combo.current()
+        self._store_current_account()
+        self._active_account_id = list(self._accounts)[selected]
+        self._load_current_account()
+
+    def _account_name(self, initial="") -> str | None:
+        result = _AccountDialog(self.root, "账号改名", name=initial).result
+        if result is None:
+            return None
+        name = result["name"]
+        if any(account["name"] == name and key != self._active_account_id
+               for key, account in self._accounts.items()):
+            messagebox.showwarning("账号名称重复", "请使用不同的账号名称。", parent=self.root)
+            return None
+        return name
+
+    def _add_account(self) -> None:
+        result = _AccountDialog(self.root, "新增账号", credentials=True).result
+        if result is None:
+            return
+        name = result["name"]
+        if any(account["name"] == name for account in self._accounts.values()):
+            messagebox.showwarning("账号名称重复", "请使用不同的账号名称。", parent=self.root)
+            return
+        self._store_current_account()
+        account_id = uuid.uuid4().hex
+        self._accounts[account_id] = {"id": account_id, "name": name, "platform": "",
+                                      "username": result["username"], "password": result["password"]}
+        self._active_account_id = account_id
+        self._refresh_accounts()
+        self._load_current_account()
+
+    def _rename_account(self) -> None:
+        if self._active_account_id == "default":
+            messagebox.showinfo("默认账号", "默认账号保留固定名称，以兼容旧配置。", parent=self.root)
+            return
+        name = self._account_name(self._accounts[self._active_account_id]["name"])
+        if name:
+            self._accounts[self._active_account_id]["name"] = name
+            self._refresh_accounts()
+
+    def _remove_account(self) -> None:
+        if self._active_account_id == "default":
+            messagebox.showinfo("默认账号", "默认账号不能移除。", parent=self.root)
+            return
+        if any(row["account_id"] == self._active_account_id and row["var"].get().strip()
+               for row in self.url_list.rows):
+            messagebox.showwarning("账号仍在使用", "请先为相关地址选择其他账号。", parent=self.root)
+            return
+        del self._accounts[self._active_account_id]
+        self._active_account_id = "default"
+        self._refresh_accounts()
+        self._load_current_account()
+
     def _collect(self) -> dict:
+        self._store_current_account()
         self._remember_provider_key()
         items = self.url_list.get_items()
         urls = [i["url"] for i in items]
@@ -2067,8 +2350,10 @@ class CourseMateGUI:
         except ValueError:
             limit = 0.0
         return {
-            "username": self.username_var.get().strip(),
-            "password": self.password_var.get(),
+            "username": self._accounts["default"]["username"],
+            "password": self._accounts["default"]["password"],
+            "accounts": list(self._accounts.values()),
+            "login_timeout_seconds": self._login_timeout_value(),
             "channel": self.channel_var.get(),
             "executable_path": self.exe_path_var.get().strip(),
             "window_size": (1440, 900),
@@ -2103,6 +2388,15 @@ class CourseMateGUI:
             "maximize": self.maximize_var.get(),
         }
 
+    def _login_timeout_value(self) -> float:
+        try:
+            value = float(self.login_timeout_var.get())
+        except ValueError:
+            raise ValueError("登录／验证等待时间必须是至少 1 秒的数字。") from None
+        if not math.isfinite(value) or value < 1:
+            raise ValueError("登录／验证等待时间必须是至少 1 秒的数字。")
+        return value
+
     def load_config(self) -> None:
         if not CONFIG_PATH.exists():
             self._apply_font_size()
@@ -2116,8 +2410,11 @@ class CourseMateGUI:
             self._append_log("ERROR", f"配置文件读取失败：{exc}")
             self._toggle_answer_fields()
             return
-        self.username_var.set(cfg.username)
-        self.password_var.set(cfg.password)
+        self._accounts = {key: dict(account, platform="") for key, account in cfg.accounts.items()}
+        self._active_account_id = "default"
+        self._refresh_accounts()
+        self._load_current_account()
+        self.login_timeout_var.set(f"{cfg.login_timeout_seconds:g}")
         self.channel_var.set(cfg.channel_raw)
         self.exe_path_var.set(cfg.executable_path_raw)
         self.keep_open_var.set(cfg.keep_browser_open)
@@ -2162,7 +2459,11 @@ class CourseMateGUI:
         self._append_log("SYSTEM", f"已载入配置，共 {len(cfg.course_urls)} 门课程。")
 
     def save(self, silent: bool = False) -> bool:
-        data = self._collect()
+        try:
+            data = self._collect()
+        except ValueError as exc:
+            messagebox.showerror("设置有误", str(exc), parent=self.root)
+            return False
         try:
             save_config(CONFIG_PATH, data)
         except OSError as exc:
@@ -2187,7 +2488,7 @@ class CourseMateGUI:
         if self.worker and self.worker.is_alive():
             return
         if not self.url_list.get_urls():
-            messagebox.showerror("缺少任务地址", "请至少填写一个课程播放页或考试页地址。", parent=self.root)
+            messagebox.showerror("缺少任务地址", "请至少填写一个课程首页、播放页或考试页地址。", parent=self.root)
             return
         if not self.save(silent=True):
             return
@@ -2331,7 +2632,7 @@ class CourseMateGUI:
     def _call_user_over(self, message: str) -> None:
         """把人叫回来处理需要人工的事（目前只有人机验证）。
 
-        程序不破解验证码，只能等人来点。既然如此，"及时被发现"就是
+        本地验证未通过时需要人工处理，"及时被发现"就是
         这条路上唯一能优化的地方——窗口收在托盘里或被别的程序挡住时，
         光响一声铃很容易错过，而错过的每一秒都是白等。
         """

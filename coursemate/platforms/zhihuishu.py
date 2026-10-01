@@ -121,12 +121,20 @@ class ZhihuishuAdapter(PlatformAdapter):
         host = urlparse(page.url).hostname or ""
         if not host:  # about:blank 等尚未导航的状态
             return False
-        return host.endswith(".zhihuishu.com") and not any(
-            host.startswith(p) for p in self.LOGIN_HOSTS
-        )
+        if not host.endswith(".zhihuishu.com") or any(host.startswith(p) for p in self.LOGIN_HOSTS):
+            return False
+        try:
+            username = page.locator(self.USERNAME_SEL).first
+            return not (await username.count() and await username.is_visible())
+        except Exception:
+            return False
 
     async def login(self, page: Page, context: BrowserContext, username: str, password: str) -> None:
-        await page.goto(self.login_url, wait_until="domcontentloaded")
+        task_url = getattr(self, "task_url", "")
+        parsed = urlparse(task_url)
+        login_url = task_url if (parsed.hostname == "onlineservice-api.zhihuishu.com"
+                                 and parsed.path == "/gateway/f/v1/login/gologin") else self.login_url
+        await page.goto(login_url, wait_until="domcontentloaded")
         # 登录页是 SPA，且 passport 域会重定向到 login 域，要等它渲染完
         await page.wait_for_timeout(3000)
         if await self.is_logged_in(page):
@@ -156,8 +164,7 @@ class ZhihuishuAdapter(PlatformAdapter):
             except Exception as exc:
                 logger.warn(f"自动登录未能完成，请手动操作：{Logger.summarize(exc)}", shift=True)
             logger.warn(
-                "若出现未识别的登录提示或滑块验证，请手动完成"
-                "——本程序不自动破解验证码。", shift=True)
+                "若出现未识别的登录提示或验证未自动通过，请在等待时限内手动完成。", shift=True)
         else:
             logger.warn("未配置账号密码，请在浏览器窗口中手动登录...", shift=True)
 
@@ -389,8 +396,7 @@ class ZhihuishuAdapter(PlatformAdapter):
         return ""
 
     async def enter_lesson(self, page: Page, lesson: Lesson) -> bool:
-        if not self.is_shared:
-            await self.prepare_page(page)
+        await self.prepare_page(page)
         if lesson.kind == "chapter":
             before = set(page.context.pages)
             await lesson.handle.click(timeout=10000)

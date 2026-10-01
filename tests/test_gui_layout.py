@@ -11,6 +11,7 @@ Python 层拦不住（WS_EX_COMPOSITED 试过，会让界面卡死）。
 课程页的地址列表仍然可滚（地址多时），滚动相关的断言都落在它上面。
 """
 import sys
+import tempfile
 import time
 import tkinter as tk
 import tkinter.font as tkfont
@@ -71,6 +72,9 @@ missing_config = Path(__file__).with_name("__missing_gui_config_for_font_test__.
 if missing_config.exists():
     raise RuntimeError("空配置测试目标已存在，拒绝读取现有文件")
 check("首次启动测试不读取现有配置", True)
+test_data = tempfile.TemporaryDirectory()
+data_patch = patch("coursemate.gui.app_dir", lambda: Path(test_data.name))
+data_patch.start()
 root = tk.Tk()
 icon_order = []
 real_set_icon = CourseMateGUI._set_icon
@@ -609,7 +613,7 @@ check("剪切把内容拿走了", target.get() == "", repr(target.get()))
 check("剪切的内容进了剪贴板", root.clipboard_get() == "要剪掉的", repr(root.clipboard_get()))
 
 # 只读的下拉框不能改，但要能复制
-readonly = next(c for c in all_combos if str(c.cget("state")) == "readonly")
+readonly = next(c for c in all_combos if c.winfo_exists() and str(c.cget("state")) == "readonly")
 app._menu_target = readonly
 readonly.select_range(0, "end") if hasattr(readonly, "select_range") else None
 app._sync_edit_menu(readonly)
@@ -861,6 +865,8 @@ root.geometry("1100x820")
 root.update_idletasks()
 
 root.destroy()
+data_patch.stop()
+test_data.cleanup()
 print(f"\n通过 {len(PASS)} 项，失败 {len(FAIL)} 项")
 if FAIL:
     print("失败项：" + ", ".join(FAIL))

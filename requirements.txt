@@ -3,3 +3,5 @@ playwright>=1.44
 anthropic>=0.40
 # 仅用于 OpenAI 兼容端点（DeepSeek 等），不参与 Anthropic 调用
 httpx>=0.27
+# 页面图片验证码的离线本地识别，不调用付费接口
+ddddocr==1.6.1

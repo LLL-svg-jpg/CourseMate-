@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import os
+import math
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -139,6 +140,33 @@ class Config:
     def password(self) -> str:
         return str(self._get("account", "password", "")).strip()
 
+    @property
+    def accounts(self) -> dict[str, dict[str, str]]:
+        accounts = {"default": {"id": "default", "name": "默认账号",
+                                "platform": str(self._get("account", "platform", "")).strip(),
+                                "username": self.username, "password": self.password}}
+        for entry in self._get("account", "list", []) or []:
+            if not isinstance(entry, dict):
+                continue
+            account_id = str(entry.get("id", "")).strip()
+            if not account_id or account_id in accounts:
+                continue
+            accounts[account_id] = {
+                "id": account_id, "name": str(entry.get("name", "")).strip() or "未命名账号",
+                "platform": str(entry.get("platform", "")).strip(),
+                "username": str(entry.get("username", "")).strip(),
+                "password": str(entry.get("password", "")),
+            }
+        return accounts
+
+    @property
+    def login_timeout_seconds(self) -> float:
+        try:
+            value = float(self._get_live("runtime", "login_timeout_seconds", 120))
+        except (TypeError, ValueError):
+            return 120.0
+        return value if math.isfinite(value) and value >= 1 else 120.0
+
     # ---------- 浏览器 ----------
     @property
     def channel(self) -> str:
@@ -212,7 +240,11 @@ class Config:
                 continue
             url = str(entry.get("url", "")).strip()
             if url.startswith("http"):
-                items.append({"url": url, "note": str(entry.get("note", "")).strip()})
+                item = {"url": url, "note": str(entry.get("note", "")).strip()}
+                account_id = str(entry.get("account_id", "default")).strip() or "default"
+                if account_id != "default":
+                    item["account_id"] = account_id
+                items.append(item)
         if items:
             return items
         legacy = self._get("course", "urls", []) or []

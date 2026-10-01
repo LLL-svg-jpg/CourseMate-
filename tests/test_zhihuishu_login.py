@@ -68,6 +68,19 @@ async def run() -> None:
         assert "accepted=true" in manual.url
         assert "protocol-clicked" not in protocol_events
 
+        # 用户给出网关登录入口时，保留该入口携带的服务跳转。
+        gateway = "https://onlineservice-api.zhihuishu.com/gateway/f/v1/login/gologin"
+        visited = []
+        async def redirect_gateway(route):
+            visited.append(True)
+            await route.fulfill(body=LOGIN_HTML, content_type="text/html")
+        await manual.route(gateway, redirect_gateway)
+        await manual.goto("about:blank")
+        adapter.task_url = gateway
+        await asyncio.wait_for(adapter.login(manual, manual.context, "example-user", "example-pass"), timeout=15)
+        assert visited == [True]
+        assert "accepted=true" in manual.url
+
         await page.set_content('<div class="yidun_modal__title">请完成安全验证</div>')
         assert await adapter.detect_captcha(page)
         await page.locator(".yidun_modal__title").evaluate("node => node.style.display = 'none'")

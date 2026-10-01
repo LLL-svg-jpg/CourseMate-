@@ -30,26 +30,43 @@ class IcveAdapter(PlatformAdapter):
 
     @classmethod
     def match(cls, url: str) -> bool:
-        return (urlparse(url).hostname or "").lower() == "zjy2.icve.com.cn"
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower()
+        return host == "zjy2.icve.com.cn" or (
+            host == "sso.icve.com.cn" and parsed.path.rstrip("/") == "/sso/auth")
 
     async def is_logged_in(self, page: Page) -> bool:
-        if (urlparse(page.url).hostname or "") != "zjy2.icve.com.cn":
+        parsed = urlparse(page.url)
+        if parsed.hostname == "sso.icve.com.cn" and parsed.path == "/sso/backstage":
+            cookies = await page.context.cookies([page.url])
+            if not any(cookie["name"] == "token" and cookie["value"] for cookie in cookies):
+                return False
+            avatar = page.locator(".avatar-wrapper .user-avatar").first
+            profile = page.locator(".el-form.info").first
+            return bool(await avatar.count() and await avatar.is_visible()
+                        and await profile.count() and await profile.is_visible())
+        if parsed.hostname != "zjy2.icve.com.cn":
             return False
         try:
-            await page.locator(".navItem .text, h5").filter(has_text="我的课程").first.wait_for(timeout=10000)
-            return True
+            node = page.locator(".navItem .text, h5").filter(has_text="我的课程").first
+            return bool(await node.count() and await node.is_visible())
         except Exception:
             return False
 
     async def _dismiss_wechat_binding(self, page: Page) -> None:
         later = page.get_by_text("下次绑定", exact=True)
-        if await later.count() and await later.first.is_visible():
-            await later.first.click(timeout=10000)
-            logger.info("已选择‘下次绑定’，继续进入智慧职教。")
+        for index in range(await later.count()):
+            button = later.nth(index)
+            if await button.is_visible():
+                await button.click(timeout=10000)
+                logger.info("已选择‘下次绑定’，继续进入智慧职教。")
+                return
 
     async def login(self, page: Page, context: BrowserContext, username: str, password: str) -> None:
         logger.info("正在打开智慧职教登录页...")
-        await page.goto(self.login_url, wait_until="domcontentloaded", timeout=30000)
+        task_url = getattr(self, "task_url", "")
+        login_url = task_url if (urlparse(task_url).hostname or "").lower() == "sso.icve.com.cn" else self.login_url
+        await page.goto(login_url, wait_until="domcontentloaded", timeout=30000)
         logger.info("智慧职教登录页已打开。")
         if await self.is_logged_in(page):
             return
@@ -61,10 +78,21 @@ class IcveAdapter(PlatformAdapter):
                 await page.get_by_placeholder("请输入账号").fill(username, timeout=10000)
                 await page.get_by_placeholder("请输入密码").fill(password, timeout=10000)
                 agreement = page.get_by_role("checkbox").first
-                if (await agreement.count() and await agreement.is_visible(timeout=10000)
-                        and not await agreement.is_checked(timeout=10000)):
-                    await agreement.check(timeout=10000)
+                if await agreement.count() and not await agreement.is_checked(timeout=10000):
+                    control = page.locator(".agreement .el-checkbox__inner").first
+                    if await control.is_visible():
+                        await control.click(timeout=10000)
+                    elif await agreement.is_visible():
+                        await agreement.check(timeout=10000)
+                    if not await agreement.is_checked(timeout=10000):
+                        raise RuntimeError("登录协议未勾选")
                 logger.info("账号密码已填写，协议已勾选，正在点击登录。")
+                if ((urlparse(page.url).hostname or "") == "sso.icve.com.cn"
+                        and await page.evaluate("typeof window.initAliyunCaptcha === 'function'")):
+                    await page.wait_for_function("""() => {
+                        const image = document.querySelector('#aliyunCaptcha-img');
+                        return image && image.complete && image.naturalWidth > 0;
+                    }""", timeout=10000)
                 await page.locator(".demo-ruleForm .login").click(timeout=10000)
                 logger.info("已提交智慧职教账号密码；如出现滑块验证，请在浏览器手动完成。")
             except Exception as exc:
@@ -88,6 +116,10 @@ class IcveAdapter(PlatformAdapter):
             logger.error("智慧职教地址缺少 classId，请复制视频播放页的完整地址。")
             return "打开失败"
         await page.goto(self.course_list_url, wait_until="domcontentloaded")
+        try:
+            await page.locator(".navItem .text, h5").filter(has_text="我的课程").first.wait_for(timeout=20000)
+        except Exception:
+            return "未登录"
         if not await self.is_logged_in(page):
             return "未登录"
         try:
@@ -418,6 +450,9 @@ class IcveAdapter(PlatformAdapter):
     async def detect_captcha(self, page: Page) -> bool:
         if (urlparse(page.url).hostname or "") != "sso.icve.com.cn":
             return False
+        popup = page.locator("#aliyunCaptcha-window-popup").first
+        if await popup.count():
+            return await popup.is_visible()
         frames = page.locator('iframe[src*="captcha" i], iframe[src*="aliyun" i]')
         if any([await frames.nth(i).is_visible() for i in range(await frames.count())]):
             return True

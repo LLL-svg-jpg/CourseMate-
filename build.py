@@ -96,7 +96,7 @@ HIDDEN_IMPORTS = [
 # playwright 自带 node 驱动，必须整包带上，否则打包后启动不了浏览器。
 # pystray 用来在系统托盘放图标，它的 Windows 后端是运行时按平台挑的，
 # PyInstaller 静态分析看不出来，所以也得整包收
-COLLECT_ALL = ["playwright", "pystray", "PIL"]
+COLLECT_ALL = ["playwright", "pystray", "PIL", "ddddocr", "onnxruntime", "cv2", "numpy"]
 
 
 def check_prerequisites() -> list[str]:
@@ -108,7 +108,7 @@ def check_prerequisites() -> list[str]:
             "缺少 PyInstaller，请执行：\n"
             "  pip install pyinstaller --index-url https://pypi.org/simple"
         )
-    for mod in ("playwright", "anthropic", "httpx"):
+    for mod in ("playwright", "anthropic", "httpx", "ddddocr", "onnxruntime", "cv2", "numpy"):
         try:
             __import__(mod)
         except ImportError:

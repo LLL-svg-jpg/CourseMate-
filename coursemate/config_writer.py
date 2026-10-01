@@ -18,6 +18,8 @@ TEMPLATE = '''# CourseMate 配置
 # 留空则运行时在浏览器里手动登录，程序会自动保存 Cookie，下次免密
 username = "{username}"
 password = "{password}"
+platform = "{account_platform}"
+{accounts}
 
 [browser]
 # auto / chrome / edge / chromium。auto = 自动使用本机已装的浏览器
@@ -74,6 +76,7 @@ cache = {cache}
 {api_keys}
 
 [runtime]
+login_timeout_seconds = {login_timeout_seconds}
 log_level = "{log_level}"
 beep_on_captcha = {beep_on_captcha}
 # 出现人机验证时把主窗口叫到最前。收在托盘里时光响铃容易错过
@@ -111,6 +114,7 @@ def dump_config(data: dict[str, Any]) -> str:
     blocks = [
         f'[[course.list]]\nurl = "{_esc(it.get("url", ""))}"\n'
         f'note = "{_esc(it.get("note", ""))}"\n'
+        f'account_id = "{_esc(it.get("account_id", "default"))}"\n'
         for it in items
     ]
     course_list = "\n".join(blocks) if blocks else ""
@@ -126,9 +130,18 @@ def dump_config(data: dict[str, Any]) -> str:
             keys.pop(provider, None)
     api_keys = "\n".join(f'"{_esc(key)}" = "{_esc(value)}"'
                          for key, value in sorted(keys.items()))
+    accounts = "\n".join(
+        '[[account.list]]\n' + "\n".join(
+            f'{key} = "{_esc(account.get(key, ""))}"'
+            for key in ("id", "name", "platform", "username", "password")) + "\n"
+        for account in (data.get("accounts") or []) if account.get("id") != "default")
     return TEMPLATE.format(
         username=_esc(data.get("username", "")),
         password=_esc(data.get("password", "")),
+        account_platform=_esc(next((account.get("platform", "") for account in
+                                   (data.get("accounts") or []) if account.get("id") == "default"), "")),
+        accounts=accounts,
+        login_timeout_seconds=float(data.get("login_timeout_seconds", 120)),
         channel=_esc(data.get("channel", "auto")),
         executable_path=_esc(data.get("executable_path", "")),
         maximize=_bool(data.get("maximize", True)),

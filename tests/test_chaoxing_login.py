@@ -53,6 +53,45 @@ async def run() -> None:
         await page.locator("#verifyCode").evaluate("node => node.style.display = 'none'")
         await page.locator("#captchaImage").evaluate("node => node.style.display = 'none'")
         assert not await adapter.detect_captcha(page)
+
+        # v8 登录后的门户需要点击个人空间；真实入口用新标签页打开。
+        await page.context.route("https://v8.chaoxing.com/", lambda route: route.fulfill(
+            body='<input id="uunnmm"><input id="pwd" type="password">'
+                 '<button id="login" onclick="location.href=\'https://v1.chaoxing.com/manage\'">登录</button>',
+            content_type="text/html"))
+        await page.context.route("https://v1.chaoxing.com/manage", lambda route: route.fulfill(
+            body='<meta charset="utf-8"><div class="login-after" '
+                 'onmouseenter="document.querySelector(\'#person-space\').hidden=false">用户菜单'
+                 '<ul><li id="person-space" hidden onclick="window.open(\'https://i.chaoxing.com/base\')">个人空间</li></ul></div>',
+            content_type="text/html"))
+        await page.context.route("https://i.chaoxing.com/base", lambda route: route.fulfill(
+            body='<meta charset="utf-8"><title>个人空间</title><h1>我的课程</h1>', content_type="text/html"))
+        adapter.task_url = "https://v8.chaoxing.com/"
+        await asyncio.wait_for(adapter.login(page, page.context, "example-user", "example-pass"), timeout=15)
+        assert page.url == "https://i.chaoxing.com/base"
+        assert await page.title() == "个人空间"
+        assert len(page.context.pages) == 1
+        # 登录判据可能早于个人空间菜单挂载，不能 count()==0 就跳过。
+        delayed = '''<meta charset="utf-8"><div class="login-after"
+          onmouseenter="document.querySelector('#person-space').hidden=false">用户菜单</div>
+          <script>setTimeout(()=>{
+            const entry=document.createElement('li'); entry.id='person-space'; entry.hidden=true;
+            entry.textContent='个人空间'; entry.onclick=()=>window.open('https://i.chaoxing.com/base');
+            document.querySelector('.login-after').append(entry);
+          },3000);</script>'''
+        await page.context.route('https://v1.chaoxing.com/manage', lambda route: route.fulfill(
+            body=delayed, content_type='text/html'))
+        await asyncio.wait_for(adapter.login(page, page.context, 'example-user', 'example-pass'), timeout=15)
+        assert page.url == 'https://i.chaoxing.com/base'
+        assert len(page.context.pages) == 1
+        # 验证通过后表单先隐藏，URL 仍短暂留在 v8，必须等门户重定向。
+        await page.context.route('https://v8.chaoxing.com/', lambda route: route.fulfill(
+            body='<title>跳转中</title><script>setTimeout(()=>location.href='
+                 '"https://v1.chaoxing.com/manage",500);</script>', content_type='text/html'))
+        await page.goto('https://v8.chaoxing.com/', wait_until='domcontentloaded')
+        await adapter._enter_personal_space(page)
+        assert page.url == 'https://i.chaoxing.com/base'
+        assert len(page.context.pages) == 1
         await browser.close()
 
 

@@ -16,10 +16,10 @@ from playwright.async_api import BrowserContext, Page, async_playwright
 from .answer.ai import build_provider
 from .answer.base import AnswerProvider
 from .answer.cache import AnswerCache
-from .browser import launch, persist_login
+from .browser import launch, open_context, persist_login
 from .config import Config
 from .diagnostics import dump_page_structure
-from .events import StudyClock
+from .events import StudyClock, VerificationTimeout
 from .exam import is_exam_url, study_exam
 from .logger import Logger
 from .platforms import resolve, supported_platforms
@@ -34,6 +34,7 @@ from .workers import (
     tuning_worker,
 )
 from .zhihuishu_work import is_work_url, study_work
+from .verification import has_verification, wait_verification
 
 logger = Logger()
 
@@ -43,6 +44,10 @@ LESSON_TIMEOUT_SECONDS = 3 * 3600
 
 class StopRequested(Exception):
     """用户主动请求停止。从任意深度抛出，由 run() 统一收敛。"""
+
+
+class LoginTimeout(Exception):
+    """当前地址的登录等待超过设置的时限。"""
 
 
 def _noop_stop() -> bool:
@@ -68,19 +73,31 @@ async def wait_for_video_question(page: Page, adapter: PlatformAdapter,
 
 async def ensure_login(
     page: Page, context: BrowserContext, adapter: PlatformAdapter, config: Config,
-    should_stop=_noop_stop,
+    should_stop=_noop_stop, account: dict[str, str] | None = None,
 ) -> None:
-    if await adapter.is_logged_in(page):
-        logger.info("登录状态有效。")
-        return
-    logger.info("需要登录，正在处理...")
-    login_task = asyncio.create_task(
-        adapter.login(page, context, config.username, config.password)
-    )
+    async def attempt() -> None:
+        if not await adapter.is_logged_in(page):
+            logger.info("需要登录，正在处理...")
+            username = account["username"] if account is not None else config.username
+            password = account["password"] if account is not None else config.password
+            await adapter.login(page, context, username, password)
+        if not await adapter.is_logged_in(page):
+            raise RuntimeError("登录结束后仍未确认登录成功")
+        await persist_login(context, account)
+
+    login_task = asyncio.create_task(attempt())
+    started = asyncio.get_running_loop().time()
     captcha_notified = False
+    verification_task = None
     try:
         while True:
-            done, _ = await asyncio.wait({login_task}, timeout=0.5)
+            if should_stop():
+                raise StopRequested
+            remaining = getattr(config, "login_timeout_seconds", 120) - (
+                asyncio.get_running_loop().time() - started)
+            if remaining <= 0:
+                raise LoginTimeout
+            done, _ = await asyncio.wait({login_task}, timeout=min(0.25, remaining))
             if should_stop():
                 raise StopRequested
             if done:
@@ -88,20 +105,26 @@ async def ensure_login(
                 break
             if not captcha_notified:
                 try:
-                    if await adapter.detect_captcha(page):
+                    async def verification_visible():
+                        return await adapter.detect_captcha(page) or await has_verification(page)
+
+                    if await asyncio.wait_for(verification_visible(), timeout=0.25):
                         logger.warn(
-                            f"{adapter.name}登录页出现安全验证，请在浏览器手动完成。",
+                            f"[需要你处理] {adapter.name}登录页出现安全验证，尝试本地处理；超过等待时限将跳过当前地址。",
                             shift=True,
                         )
                         captcha_notified = True
+                        verification_task = asyncio.create_task(wait_verification(page, adapter))
                 except Exception:
                     pass
     finally:
         if not login_task.done():
             login_task.cancel()
         await asyncio.gather(login_task, return_exceptions=True)
+        if verification_task is not None:
+            verification_task.cancel()
+            await asyncio.gather(verification_task, return_exceptions=True)
     logger.info("登录完成。", shift=True)
-    await persist_login(context)
 
 
 async def study_lesson(
@@ -309,14 +332,42 @@ async def study_course(
     return True
 
 
+async def watch_address(awaitable, verification_task: asyncio.Task, should_stop) -> bool:
+    task = asyncio.create_task(awaitable)
+    try:
+        while True:
+            if should_stop():
+                raise StopRequested
+            if verification_task.done() and not verification_task.cancelled():
+                exc = verification_task.exception()
+                if isinstance(exc, VerificationTimeout):
+                    raise exc
+            waiting = {task} if verification_task.done() else {task, verification_task}
+            done, _ = await asyncio.wait(waiting, timeout=0.25,
+                                         return_when=asyncio.FIRST_COMPLETED)
+            if should_stop():
+                raise StopRequested
+            if verification_task in done and not verification_task.cancelled():
+                exc = verification_task.exception()
+                if isinstance(exc, VerificationTimeout):
+                    raise exc
+            if task in done:
+                return await task
+    finally:
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
 async def run(config: Config, should_stop=_noop_stop) -> bool:
-    urls = config.course_urls
+    items = config.course_items
+    urls = [item["url"] for item in items]
     unresolved = [u for u in urls if resolve(u) is None]
     if unresolved:
         logger.error(f"以下 URL 没有匹配的平台适配器：{unresolved}")
         logger.info(f"当前支持：{', '.join(supported_platforms())}")
-        urls = [u for u in urls if resolve(u) is not None]
-    if not urls:
+        items = [item for item in items if resolve(item["url"]) is not None]
+    if not items:
         return False
 
     cache = AnswerCache(enabled=config.answer_cache)
@@ -339,20 +390,53 @@ async def run(config: Config, should_stop=_noop_stop) -> bool:
     tasks: list[asyncio.Task] = []
     studied_any = False
     completed = not unresolved
+    retain_failure_page = bool(unresolved)
+    page = context = browser = None
+    active_account = None
+    login_ready = False
 
     async with async_playwright() as p:
-        page, context = await launch(p, config)
         try:
-            for url in urls:
+            for address_number, item in enumerate(items, 1):
+                url = item["url"]
                 if should_stop():
                     raise StopRequested
                 adapter = resolve(url)
                 if adapter is None:
                     continue
+                adapter.task_url = url
+                account = config.accounts.get(item.get("account_id", "default"))
+                if account is None or (account["platform"] and account["platform"] != adapter.name):
+                    logger.warn(f"第 {address_number} 个地址的账号不存在或平台不匹配，已跳过。", shift=True)
+                    completed = False
+                    continue
+                account = dict(account, platform=adapter.name)
+                if account != active_account or context is None:
+                    if context is not None:
+                        if login_ready:
+                            await persist_login(context, active_account)
+                        await context.close()
+                    if browser is None:
+                        page, context = await launch(p, config, account)
+                        browser = context.browser
+                    else:
+                        page, context = await open_context(browser, config, account)
+                    active_account = account
+                    login_ready = False
                 logger.info("=" * 46, shift=True)
-                if not await adapter.is_logged_in(page):
-                    logger.info(f"正在确认{adapter.name}登录状态。")
-                    await ensure_login(page, context, adapter, config, should_stop)
+                try:
+                    await ensure_login(page, context, adapter, config, should_stop, account)
+                    login_ready = True
+                except StopRequested:
+                    raise
+                except Exception as exc:
+                    reason = "登录等待超时" if isinstance(exc, LoginTimeout) else "登录未成功"
+                    logger.warn(f"第 {address_number} 个地址{reason}，本轮跳过并继续下一地址。", shift=True)
+                    completed = False
+                    await context.close()
+                    page = context = None
+                    login_ready = False
+                    continue
                 # 账号填充、协议勾选及可能出现的人工安全验证完成后再开始计时。
                 clock.reset()
                 if is_work_url(url):
@@ -412,11 +496,16 @@ async def run(config: Config, should_stop=_noop_stop) -> bool:
                     ),
                 ]
                 tasks.append(asyncio.create_task(task_monitor(tasks), name="monitor"))
+                verification_skipped = False
                 try:
                     try:
-                        course_processed = await study_course(
+                        course_processed = await watch_address(study_course(
                             page, adapter, url, clock, config, provider, cache, should_stop
-                        )
+                        ), tasks[2], should_stop)
+                    except VerificationTimeout:
+                        logger.warn(f"第 {address_number} 个地址验证等待超时，继续下一地址。", shift=True)
+                        course_processed = False
+                        verification_skipped = True
                     except StopRequested:
                         raise
                     except Exception as exc:
@@ -428,11 +517,16 @@ async def run(config: Config, should_stop=_noop_stop) -> bool:
                         studied_any = True
                     else:
                         completed = False
+                        retain_failure_page = retain_failure_page or not verification_skipped
                 finally:
                     for task in tasks:
                         task.cancel()
                     await asyncio.gather(*tasks, return_exceptions=True)
                     tasks = []
+                if verification_skipped:
+                    await context.close()
+                    page = context = None
+                    login_ready = False
                 logger.info(
                     f"本课程有效学习 {clock.elapsed_minutes:.1f} 分钟"
                     f"（另有 {clock.paused_minutes:.1f} 分钟为答题/验证等待，未计入）。"
@@ -449,7 +543,7 @@ async def run(config: Config, should_stop=_noop_stop) -> bool:
 
             # 一节都没学成就直接关浏览器，用户只会看到"窗口一闪就没了"，
             # 既看不到出错页面也没法手动接管。留着窗口，由用户点停止再关。
-            if not completed and config.keep_browser_open and not config.headless:
+            if retain_failure_page and config.keep_browser_open and not config.headless:
                 logger.warn("有任务未能完成，浏览器先不关闭。", shift=True)
                 logger.warn("你可以在浏览器里手动看看是哪一步不对；"
                             "看完点界面上的「停止」按钮即可关闭。")
@@ -470,6 +564,11 @@ async def run(config: Config, should_stop=_noop_stop) -> bool:
                 task.cancel()
             if tasks:
                 await asyncio.gather(*tasks, return_exceptions=True)
+            if context is not None and login_ready:
+                try:
+                    await persist_login(context, active_account)
+                except Exception:
+                    logger.warn("结束任务时未能保存当前账号的登录状态。")
             if provider:
                 await provider.aclose()
             cache.close()

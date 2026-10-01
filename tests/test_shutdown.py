@@ -73,8 +73,14 @@ sys.path.insert(0, r"{root}")
 # 无人值守下不替它按掉的话，进程会永远停在那个弹窗上
 mb.askokcancel = lambda *a, **k: True
 from coursemate.gui import CourseMateGUI
+from pathlib import Path
+import tempfile
+import coursemate.gui as gui
 
 root = tk.Tk()
+test_data = tempfile.TemporaryDirectory()
+gui.CONFIG_PATH = Path(test_data.name) / "config.toml"
+gui.app_dir = lambda: Path(test_data.name)
 app = CourseMateGUI(root)
 root.update_idletasks(); root.update()
 print("TRAY:", app.tray is not None, flush=True)

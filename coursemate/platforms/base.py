@@ -6,7 +6,7 @@
 契约分三组：
 - 刷课主线：登录 → 打开课程 → 遍历章节 → 播放 → 读进度 → 切下一节
 - 答题支线：检测弹题 → 提取 → 填答案 → 提交/保存 → 关闭
-- 风控：检测人机验证（只检测并交还人工，不做破解）
+- 风控：检测人机验证（具体处理与等待时限由通用验证协程控制）
 """
 from __future__ import annotations
 
@@ -164,7 +164,7 @@ class PlatformAdapter(ABC):
     # ---------- 风控 ----------
 
     async def detect_captcha(self, page: Page) -> bool:
-        """是否出现人机验证。只检测，不破解——一律交还人工。"""
+        """是否出现人机验证。这里只检测，不操作验证控件。"""
         return False
 
     async def captcha_cleared(self, page: Page) -> bool:

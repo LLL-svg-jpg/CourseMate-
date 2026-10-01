@@ -12,6 +12,10 @@ import asyncio
 import time
 
 
+class VerificationTimeout(Exception):
+    """当前任务地址的页面验证未能在设置的时限内完成。"""
+
+
 class Interruption:
     """一类中断（如人机验证）的信号量。"""
 

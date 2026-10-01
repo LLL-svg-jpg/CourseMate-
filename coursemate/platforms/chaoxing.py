@@ -11,6 +11,8 @@
 """
 from __future__ import annotations
 
+from urllib.parse import urlparse
+
 import asyncio
 import base64
 
@@ -31,9 +33,11 @@ class ChaoxingAdapter(PlatformAdapter):
 
     CATALOG_SEL = ".posCatalog_select"
     CATALOG_NAME_SEL = ".posCatalog_name"
+    HOME_CATALOG_SEL = '.chapter_item[id^="cur"]'
     COMPLETED_SEL = ".icon_Completed, .icon_yiwanc"
-    # 只识别可见的验证控件，用于暂停并提醒用户手动处理；不尝试读取或破解验证码。
+    # 识别可见的验证控件；本地处理与等待时限由通用验证协程控制。
     CAPTCHA_SELECTORS = (
+        ".cx_comImageValidate",
         "#nc_1_wrapper", ".nc-container", ".geetest_panel",
         "#verifyCode", "#validateCode", "#imgCode",
         'input[placeholder*="验证码"]',
@@ -118,6 +122,25 @@ class ChaoxingAdapter(PlatformAdapter):
 
     # ---------- 刷课主线 ----------
 
+    async def _enter_personal_space(self, page: Page) -> None:
+        if (urlparse(page.url).hostname or "") == "v8.chaoxing.com":
+            await page.wait_for_url("**://v1.chaoxing.com/**", wait_until="domcontentloaded", timeout=30000)
+        if (urlparse(page.url).hostname or "") != "v1.chaoxing.com":
+            return
+        entry = page.locator("#person-space").first
+        await entry.wait_for(state="attached", timeout=10000)
+        if not await entry.is_visible():
+            await page.locator(".login-after").first.hover(timeout=10000)
+        async with page.expect_popup(timeout=15000) as opened:
+            await entry.click(timeout=10000)
+        space = await opened.value
+        try:
+            await space.wait_for_url("**://i.chaoxing.com/**", wait_until="domcontentloaded", timeout=30000)
+            await page.goto(space.url, wait_until="domcontentloaded", timeout=30000)
+        finally:
+            await space.close()
+        logger.info("已点击并进入学习通个人空间。")
+
     async def is_logged_in(self, page: Page) -> bool:
         url = (page.url or "").lower()
         # 新开的 about:blank 过去会被误判成已登录，导致账号密码填写根本不执行。
@@ -126,25 +149,32 @@ class ChaoxingAdapter(PlatformAdapter):
         if "login" in url or "passport" in url:
             return False
         try:
+            username = page.locator("#uunnmm").first
+            if await username.count() and await username.is_visible():
+                return False
             return "用户登录" not in (await page.title())
         except Exception:
             return True
 
     async def login(self, page: Page, context: BrowserContext, username: str, password: str) -> None:
-        await page.goto(self.login_url, wait_until="commit")
+        task_host = urlparse(getattr(self, "task_url", "")).hostname or ""
+        login_url = "https://v8.chaoxing.com/" if task_host == "v8.chaoxing.com" else self.login_url
+        await page.goto(login_url, wait_until="commit")
         await page.wait_for_timeout(1500)
         if await self.is_logged_in(page):
             logger.info("检测到已登录，跳过登录步骤。")
+            await self._enter_personal_space(page)
             return
 
         if username and password:
             logger.info("正在自动填写账号密码...")
             try:
-                await page.wait_for_selector("#phone", state="attached", timeout=10000)
-                await page.locator("#phone").fill(username)
+                username_sel = "#uunnmm" if task_host == "v8.chaoxing.com" else "#phone"
+                await page.wait_for_selector(username_sel, state="attached", timeout=10000)
+                await page.locator(username_sel).fill(username)
                 await page.locator("#pwd").fill(password)
                 await page.wait_for_timeout(400)
-                login_button = page.locator("#loginBtn").first
+                login_button = page.locator("#login" if task_host == "v8.chaoxing.com" else "#loginBtn").first
                 if not await login_button.count() or not await login_button.is_visible():
                     # 用户可能在填充刚结束时已自行提交；页面既然离开了登录表单，
                     # 就绝不能再对新页面里碰巧同名的元素自动点击。
@@ -164,7 +194,7 @@ class ChaoxingAdapter(PlatformAdapter):
                             await box.check()
                             break
                     await login_button.click()
-                    logger.info("已提交学习通账号密码；如出现验证，请在浏览器手动完成。")
+                    logger.info("已提交学习通账号密码；验证未自动通过时，请在等待时限内手动处理。")
             except Exception as exc:
                 logger.warn(f"自动填写失败，请手动登录：{Logger.summarize(exc)}")
         else:
@@ -174,6 +204,7 @@ class ChaoxingAdapter(PlatformAdapter):
         for _ in range(24 * 3600 // 2):
             await asyncio.sleep(2)
             if await self.is_logged_in(page):
+                await self._enter_personal_space(page)
                 return
 
     async def open_course(self, page: Page, url: str) -> str:
@@ -203,8 +234,23 @@ class ChaoxingAdapter(PlatformAdapter):
                 pass
 
     async def list_lessons(self, page: Page) -> list[Lesson]:
-        await page.wait_for_selector(self.CATALOG_SEL, state="attached", timeout=30000)
-        handles = page.locator(self.CATALOG_SEL)
+        handles = None
+        homepage = False
+        for _ in range(60):
+            for frame in getattr(page, "frames", [page]):
+                for selector in (self.CATALOG_SEL, self.HOME_CATALOG_SEL):
+                    found = frame.locator(selector)
+                    if await found.count():
+                        handles = found
+                        homepage = selector == self.HOME_CATALOG_SEL
+                        break
+                if handles is not None:
+                    break
+            if handles is not None:
+                break
+            await asyncio.sleep(0.5)
+        if handles is None:
+            raise RuntimeError("30 秒内未找到学习通课程首页或播放页的章节目录。")
         lessons: list[Lesson] = []
         for index in range(await handles.count()):
             # Locator 会在每次操作时重新解析 DOM。学习通播完一节会重绘目录，
@@ -216,14 +262,14 @@ class ChaoxingAdapter(PlatformAdapter):
                 # firstLayer / 无 cur 的项只是“第1章”这类目录标题，不是视频。
                 if "firstLayer" in item_class or (item_id and "cur" not in item_id):
                     continue
-                name_node = handle.locator(self.CATALOG_NAME_SEL).first
+                name_node = handle.locator(".catalog_name" if homepage else self.CATALOG_NAME_SEL).first
                 if await name_node.count():
                     title = ((await name_node.text_content()) or "").strip()
                 else:
                     title = ((await handle.text_content()) or "").strip()
                 title = " ".join(title.split())[:60]
                 finished = await handle.locator(self.COMPLETED_SEL).count() > 0
-                pending = handle.locator(".jobUnfinishCount").first
+                pending = handle.locator(".knowledgeJobCount" if homepage else ".jobUnfinishCount").first
                 if await pending.count():
                     value = (await pending.get_attribute("value") or "").strip()
                     finished = value == "0"

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,14 @@ logger = Logger()
 from .paths import app_dir
 
 COOKIE_PATH = app_dir() / "runtime" / "cookies.json"
+
+
+def account_storage_path(account: dict[str, str]) -> Path:
+    account_key = hashlib.sha256(account["id"].encode()).hexdigest()[:16]
+    identity = json.dumps([account.get(key, "") for key in
+                           ("platform", "username", "password")], ensure_ascii=False)
+    identity_key = hashlib.sha256(identity.encode()).hexdigest()[:16]
+    return app_dir() / "runtime" / "accounts" / f"{account_key}-{identity_key}.json"
 
 
 def load_cookies(path: Path = COOKIE_PATH) -> list[dict[str, Any]] | None:
@@ -44,7 +53,8 @@ def clear_cookies(path: Path = COOKIE_PATH) -> None:
         pass
 
 
-async def launch(p: Playwright, config: Config) -> tuple[Page, BrowserContext]:
+async def launch(p: Playwright, config: Config,
+                 account: dict[str, str] | None = None) -> tuple[Page, BrowserContext]:
     """启动浏览器并返回首个页面。
 
     Autovisor 的实战经验：Edge 首次启动有概率直接失败，重试一次即可恢复。
@@ -95,6 +105,12 @@ async def launch(p: Playwright, config: Config) -> tuple[Page, BrowserContext]:
         logger.warn(f"浏览器首次启动失败，正在重试：{Logger.summarize(exc)}")
         browser = await p.chromium.launch(**launch_args)
 
+    return await open_context(browser, config, account)
+
+
+async def open_context(browser, config: Config,
+                       account: dict[str, str] | None = None) -> tuple[Page, BrowserContext]:
+    width, height = config.window_size
     # no_viewport 是关键：给了固定 viewport，页面内容就被锁死在那个尺寸，
     # 用户把窗口拉大或最大化后，页面照旧按老尺寸渲染，看着就像没全屏。
     # 设成 True 后视口跟随窗口实际大小，拉多大页面就铺多大。
@@ -107,14 +123,25 @@ async def launch(p: Playwright, config: Config) -> tuple[Page, BrowserContext]:
         # 无头模式下没有真实窗口，必须给个尺寸，否则默认 800x600 太小
         context_args.pop("no_viewport")
         context_args["viewport"] = {"width": width, "height": height}
+    if account is not None:
+        state_path = account_storage_path(account)
+        if state_path.exists():
+            try:
+                state = json.loads(state_path.read_text(encoding="utf-8"))
+                if not isinstance(state, dict) or not isinstance(state.get("cookies"), list) \
+                        or not isinstance(state.get("origins"), list):
+                    raise ValueError("登录状态格式错误")
+                context_args["storage_state"] = state
+            except (OSError, ValueError):
+                logger.warn("该账号的登录状态损坏，需要重新登录。")
     context = await browser.new_context(**context_args)
 
-    cookies = load_cookies()
+    cookies = load_cookies() if account is None else None
     if cookies:
         await context.add_cookies(cookies)
         logger.info("已载入登录凭证，尝试免密登录。")
     else:
-        logger.info("未找到登录凭证，需要先完成一次登录。")
+        logger.info("浏览器会话已隔离，将检查当前账号的登录状态。")
 
     # 必须在 new_page 之前注入，才能覆盖页面自身脚本执行前的时机
     await context.add_init_script(STEALTH_JS)
@@ -128,7 +155,17 @@ async def launch(p: Playwright, config: Config) -> tuple[Page, BrowserContext]:
     return page, context
 
 
-async def persist_login(context: BrowserContext) -> None:
+async def persist_login(context: BrowserContext,
+                        account: dict[str, str] | None = None) -> None:
+    if account is not None:
+        state = await context.storage_state()
+        path = account_storage_path(account)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+        except OSError:
+            logger.warn("保存当前账号的登录状态失败。")
+        return
     cookies = await context.cookies()
     if cookies:
         save_cookies(cookies)

@@ -33,7 +33,14 @@ async def run() -> None:
     stop = asyncio.Event()
     config = SimpleNamespace(username="", password="")
     messages = []
-    with patch("coursemate.runner.logger.warn", side_effect=lambda message, **_: messages.append(message)):
+    verification_cancelled = []
+    async def verification(*args):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            verification_cancelled.append(True)
+    with (patch("coursemate.runner.logger.warn", side_effect=lambda message, **_: messages.append(message)),
+          patch("coursemate.runner.wait_verification", verification)):
         task = asyncio.create_task(ensure_login(None, None, adapter, config, stop.is_set))
         await asyncio.sleep(0.7)
         stop.set()
@@ -45,7 +52,8 @@ async def run() -> None:
             raise AssertionError("停止指令没有中断登录等待")
     assert adapter.cancelled
     assert any("登录页出现安全验证" in message for message in messages)
-    assert all("[需要你处理]" not in message for message in messages)
+    assert sum("[需要你处理]" in message for message in messages) == 1
+    assert verification_cancelled == [True]
 
 
 if __name__ == "__main__":
