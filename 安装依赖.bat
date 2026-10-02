@@ -1,20 +1,25 @@
 @echo off
 chcp 65001 >nul
 cd /d "%~dp0"
-title CourseMate 安装依赖
+title Online Course Assistant 安装依赖
 
-if exist "CourseMate.exe" (
+if exist "OnlineCourseAssistant.exe" goto packaged
+if exist "CourseMate.exe" goto packaged
+goto source
+
+:packaged
     echo.
-    echo   此脚本只供源码运行，不能修复已打包的 CourseMate.exe。
+    echo   此脚本只供源码运行，不能修复已打包的 EXE。
     echo   EXE 已内置 Python 依赖；若提示缺失，请重新下载完整发布包。
     echo   未执行任何 pip 安装。
     echo.
     pause
     exit /b 2
-)
+
+:source
 
 echo.
-echo   正在安装 CourseMate 运行依赖...
+echo   正在安装 Online Course Assistant 运行依赖...
 echo.
 
 REM 优先用 PyPI 官方源。本机 pip 若配置了有问题的镜像，
@@ -44,6 +49,6 @@ exit /b 1
 
 :ok
 echo.
-echo   依赖安装完成。现在可以双击「启动.bat」或「CourseMate.pyw」打开软件了。
+echo   依赖安装完成。现在可以双击「启动.bat」或「OnlineCourseAssistant.pyw」打开软件了。
 echo.
 pause

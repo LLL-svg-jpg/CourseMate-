@@ -99,7 +99,7 @@ async def dump_page_structure(page, candidates: tuple[str, ...] = (),
         logger.warn(f"页面结构导出失败：{Logger.summarize(exc)}")
         return None
 
-    w("CourseMate 页面结构诊断")
+    w("Online Course Assistant 页面结构诊断")
     w(f"时间：{datetime.now():%Y-%m-%d %H:%M:%S}")
     w("=" * 70)
     w(f"地址：{data.get('url', '')}")

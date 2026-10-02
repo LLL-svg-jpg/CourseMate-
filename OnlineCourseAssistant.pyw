@@ -1,4 +1,4 @@
-"""CourseMate 图形界面启动入口。
+"""Online Course Assistant 图形界面启动入口。
 
 源码运行时，.pyw 后缀让 Windows 用 pythonw.exe 打开，双击不弹黑框。
 打包成 exe 后，本文件是 PyInstaller 的入口脚本。
@@ -66,7 +66,7 @@ def main() -> int:
     if sys.version_info < (3, 11):
         _fatal(
             "Python 版本过低",
-            f"CourseMate 需要 Python 3.11 或更高版本。\n"
+            f"Online Course Assistant 需要 Python 3.11 或更高版本。\n"
             f"当前版本：{sys.version.split()[0]}",
         )
         return 1

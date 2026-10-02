@@ -30,8 +30,8 @@ from .logger import Logger
 from .paths import app_dir, is_frozen, resource
 from . import providers
 
-APP_NAME = "CourseMate 刷课助手"
-PROJECT_URL = "https://github.com/LLL-svg-jpg/CourseMate-"
+APP_NAME = "Online Course Assistant"
+PROJECT_URL = "https://github.com/LLL-svg-jpg/Online-Course-Assistant"
 # 配置必须落在 exe 旁边，不能落在打包解压出来的临时目录
 CONFIG_PATH = app_dir() / "config.toml"
 
@@ -1163,11 +1163,11 @@ class CourseMateGUI:
         box = section("关于")
         from . import __version__
 
-        ttk.Label(box, text=f"CourseMate  v{__version__}").grid(
+        ttk.Label(box, text=f"{APP_NAME}  v{__version__}").grid(
             row=0, column=0, columnspan=3, sticky="w")
         ttk.Label(box, text="作者：LLL-svg-jpg").grid(
             row=1, column=0, columnspan=3, sticky="w", pady=(6, 0))
-        self.project_link = ttk.Label(box, text=f"项目地址：{PROJECT_URL}",
+        self.project_link = ttk.Label(box, text="GitHub：LLL-svg-jpg/Online-Course-Assistant",
                                       foreground="#1565c0", cursor="hand2", takefocus=True)
         self.project_link.grid(row=2, column=0, columnspan=3, sticky="w", pady=(4, 0))
         for event in ("<Button-1>", "<Return>", "<space>"):
@@ -1595,7 +1595,7 @@ class CourseMateGUI:
             pystray.MenuItem("退出", call(self.quit_app)),
         )
         try:
-            self.tray = pystray.Icon("CourseMate", image, APP_NAME, menu)
+            self.tray = pystray.Icon("OnlineCourseAssistant", image, APP_NAME, menu)
             threading.Thread(target=self.tray.run, daemon=True,
                              name="coursemate-tray").start()
         except Exception:
@@ -1900,7 +1900,8 @@ class CourseMateGUI:
         """
         startup = Path(os.path.expandvars(
             r"%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup"))
-        return startup / "CourseMate 刷课助手.lnk"
+        legacy = startup / "CourseMate 刷课助手.lnk"
+        return legacy if legacy.exists() else startup / f"{APP_NAME}.lnk"
 
     def _is_autostart_enabled(self) -> bool:
         try:
@@ -1933,7 +1934,7 @@ class CourseMateGUI:
             stale = target.lower() != expected.lower()
             if not stale and not getattr(sys, "frozen", False):
                 args = lines[1] if len(lines) > 1 else ""
-                stale = str(app_dir()).lower() not in args.lower()
+                stale = str(app_dir() / "OnlineCourseAssistant.pyw").lower() not in args.lower()
             if stale:
                 self._apply_autostart()
                 self._append_log("SYSTEM", "检测到程序位置变化，已更新开机自启动的快捷方式。")
@@ -1957,7 +1958,7 @@ class CourseMateGUI:
                 target, args = sys.executable, ""
             else:
                 target = str(Path(sys.executable).with_name("pythonw.exe"))
-                args = f'"{app_dir() / "CourseMate.pyw"}"'
+                args = f'"{app_dir() / "OnlineCourseAssistant.pyw"}"'
 
             import subprocess
 
@@ -2872,7 +2873,7 @@ def main() -> int:
     try:
         from ctypes import windll
 
-        windll.shell32.SetCurrentProcessExplicitAppUserModelID("CourseMate.App")
+        windll.shell32.SetCurrentProcessExplicitAppUserModelID("OnlineCourseAssistant.App")
     except Exception:
         pass
     try:

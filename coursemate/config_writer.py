@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-TEMPLATE = '''# CourseMate 配置
+TEMPLATE = '''# Online Course Assistant 配置
 # 本文件由图形界面生成，也可直接手工编辑。
 # 注意：这里可能保存了你的账号密码与 API Key，不要分享给他人。
 

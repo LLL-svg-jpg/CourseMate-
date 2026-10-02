@@ -17,7 +17,8 @@ from pathlib import Path
 from PIL import Image, ImageChops, ImageGrab
 
 
-TITLE = "CourseMate 刷课助手"
+TITLE = "Online Course Assistant"
+EXE_NAME = "OnlineCourseAssistant.exe"
 user32 = ctypes.windll.user32
 user32.SetProcessDPIAware()
 user32.FindWindowW.argtypes = (ctypes.c_wchar_p, ctypes.c_wchar_p)
@@ -49,7 +50,7 @@ def window_for(pid: int) -> int:
             if owner.value == pid:
                 return hwnd
         time.sleep(0.25)
-    raise RuntimeError("EXE 启动后未出现 CourseMate 窗口")
+    raise RuntimeError("EXE 启动后未出现 Online Course Assistant 窗口")
 
 
 def rect_of(hwnd: int) -> Rect:
@@ -77,12 +78,12 @@ def activate(hwnd: int) -> None:
     foreground = user32.GetForegroundWindow()
     title = ctypes.create_unicode_buffer(256)
     user32.GetWindowTextW(foreground, title, len(title))
-    raise RuntimeError(f"截图时 CourseMate 不是前台窗口；当前前台：{title.value!r}")
+    raise RuntimeError(f"截图时 Online Course Assistant 不是前台窗口；当前前台：{title.value!r}")
 
 
 def capture_round(exe: Path, output: Path, label: str) -> tuple[int, dict[str, Image.Image]]:
-    if user32.FindWindowW(None, TITLE):
-        raise RuntimeError("已有 CourseMate 窗口；请先关闭，避免误操作现有程序")
+    if any(user32.FindWindowW(None, title) for title in (TITLE, "CourseMate 刷课助手")):
+        raise RuntimeError("已有网课助手窗口；请先关闭，避免误操作现有程序")
     proc = subprocess.Popen([str(exe)], cwd=exe.parent)
     try:
         hwnd = window_for(proc.pid)
@@ -169,18 +170,18 @@ def ai_labels_visible(image: Image.Image) -> bool:
 
 
 def copy_program(source: Path, output: Path) -> Path:
-    if not (source / "CourseMate.exe").is_file() or not (source / "_internal").is_dir():
-        raise ValueError("源目录需要包含 CourseMate.exe 和 _internal/")
-    if (source / "CourseMate.exe").is_symlink() or any(
+    if not (source / EXE_NAME).is_file() or not (source / "_internal").is_dir():
+        raise ValueError(f"源目录需要包含 {EXE_NAME} 和 _internal/")
+    if (source / EXE_NAME).is_symlink() or any(
            p.is_symlink() or
            p.name.lower() in {"config.toml", "runtime", "cookies.json"} or
            p.suffix.lower() in {".db", ".log", ".lnk"}
            for p in (source / "_internal").rglob("*")):
         raise RuntimeError("依赖目录中发现疑似个人数据，拒绝复制")
     output.mkdir(parents=True)
-    copy = output / "CourseMate"
+    copy = output / "OnlineCourseAssistant"
     copy.mkdir()
-    shutil.copy2(source / "CourseMate.exe", copy / "CourseMate.exe")
+    shutil.copy2(source / EXE_NAME, copy / EXE_NAME)
     shutil.copytree(source / "_internal", copy / "_internal")
     return copy
 
@@ -198,7 +199,7 @@ def main() -> int:
     if output == build or build not in output.parents or output.exists():
         parser.error("--output-dir 必须是 build/ 下全新的子目录")
     copy = copy_program(source, output)
-    first_dpi, first = capture_round(copy / "CourseMate.exe", output, "first")
+    first_dpi, first = capture_round(copy / EXE_NAME, output, "first")
     generated_config = copy / "config.toml"
     if generated_config.exists():
         config = tomllib.loads(generated_config.read_text(encoding="utf-8"))
@@ -208,7 +209,7 @@ def main() -> int:
                 config.get("course", {}).get("urls") or
                 config.get("course", {}).get("list")):
             raise RuntimeError("测试副本的自动保存配置含有非空个人字段")
-    second_dpi, second = capture_round(copy / "CourseMate.exe", output, "second")
+    second_dpi, second = capture_round(copy / EXE_NAME, output, "second")
     if not all(ai_labels_visible(images["ai"]) for images in (first, second)):
         raise RuntimeError("AI 页字段标签未完整显示，首次启动视觉验收失败")
     for images in (first, second):

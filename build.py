@@ -26,8 +26,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 DIST = ROOT / "dist"
 BUILD = ROOT / "build"
-APP_NAME = "CourseMate"
-DISPLAY_NAME = "CourseMate 刷课助手"
+APP_NAME = "OnlineCourseAssistant"
+DISPLAY_NAME = "Online Course Assistant"
 ICON = ROOT / "assets" / "app.ico"
 
 
@@ -178,7 +178,7 @@ def build(
         cmd += ["--hidden-import", mod]
     for pkg in COLLECT_ALL:
         cmd += ["--collect-all", pkg]
-    cmd.append(str(ROOT / "CourseMate.pyw"))
+    cmd.append(str(ROOT / "OnlineCourseAssistant.pyw"))
 
     print("正在打包，首次可能要几分钟...\n")
     print(" ".join(cmd[:8]), "...\n")
@@ -293,7 +293,7 @@ $lnk.Save()
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="打包 CourseMate")
+    parser = argparse.ArgumentParser(description="打包 Online Course Assistant")
     parser.add_argument("--onefile", action="store_true", help="打包为单个 exe（不推荐）")
     parser.add_argument("--distpath", type=Path, required=True,
                         help="产物目录；必须是新的版本子目录")

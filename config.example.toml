@@ -1,4 +1,4 @@
-# CourseMate 配置模板
+# Online Course Assistant 配置模板
 # 复制本文件为 config.toml 后修改。config.toml 已被 .gitignore 忽略，不会泄露账号。
 
 [account]

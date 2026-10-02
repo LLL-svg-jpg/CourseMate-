@@ -1,10 +1,14 @@
 @echo off
 chcp 65001 >nul
 cd /d "%~dp0"
-title CourseMate 刷课助手
+title Online Course Assistant
 
 rem 优先用打包好的 exe。用 pythonw 跑 .pyw 也能用，但那样任务管理器里
 rem 显示的是 Python 和 Python 的图标，看不出是哪个软件。
+if exist "dist\OnlineCourseAssistant-v1.0.1-windows-x64\OnlineCourseAssistant\OnlineCourseAssistant.exe" (
+    start "" "dist\OnlineCourseAssistant-v1.0.1-windows-x64\OnlineCourseAssistant\OnlineCourseAssistant.exe"
+    exit /b 0
+)
 if exist "dist\CourseMate-v1.0.0-windows-x64\CourseMate\CourseMate.exe" (
     start "" "dist\CourseMate-v1.0.0-windows-x64\CourseMate\CourseMate.exe"
     exit /b 0
@@ -36,13 +40,13 @@ echo.
 
 where pythonw >nul 2>nul
 if %errorlevel%==0 (
-    start "" pythonw "CourseMate.pyw"
+    start "" pythonw "OnlineCourseAssistant.pyw"
     exit /b 0
 )
 
 where python >nul 2>nul
 if %errorlevel%==0 (
-    start "" python "CourseMate.pyw"
+    start "" python "OnlineCourseAssistant.pyw"
     exit /b 0
 )
 

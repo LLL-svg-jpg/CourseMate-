@@ -16,13 +16,7 @@ from coursemate import __version__
 from coursemate.config import Config, ConfigError
 from coursemate.logger import Logger
 
-BANNER = r"""
-   ____                          __  __       _
-  / ___|___  _   _ _ __ ___  ___|  \/  | __ _| |_ ___
- | |   / _ \| | | | '__/ __|/ _ \ |\/| |/ _` | __/ _ \
- | |__| (_) | |_| | |  \__ \  __/ |  | | (_| | ||  __/
-  \____\___/ \__,_|_|  |___/\___|_|  |_|\__,_|\__\___|
-"""
+BANNER = "Online Course Assistant"
 
 
 def check_environment() -> list[str]:
@@ -56,15 +50,15 @@ def check_environment() -> list[str]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        prog="coursemate", description="自动播放课程、遇题作答、继续播放的陪伴程序"
+        prog="online-course-assistant", description="网课学习辅助工具"
     )
     parser.add_argument("-c", "--config", default="config.toml", help="配置文件路径")
     parser.add_argument("--check", action="store_true", help="只做自检，不启动浏览器")
-    parser.add_argument("-v", "--version", action="version", version=f"CourseMate {__version__}")
+    parser.add_argument("-v", "--version", action="version", version=f"Online Course Assistant {__version__}")
     args = parser.parse_args()
 
     print(BANNER)
-    print(f"  CourseMate v{__version__}  —— 自动刷课 + AI 答题\n")
+    print(f"  v{__version__}  —— 网课学习辅助 + AI 答题\n")
 
     logger = Logger()
     logger.info("正在自检运行环境...")
